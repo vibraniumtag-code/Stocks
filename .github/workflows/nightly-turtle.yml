@@ -68,8 +68,8 @@ jobs:
               body = "Turtle Scanner ran, but no checklist file was found."
 
           msg = EmailMessage()
-          msg["Subject"] = "Turtle Scanner – Tomorrow’s Entries"
-          msg["From"] = f"Turtle Scanner <{user}>"
+          msg["Subject"] = "Scanner – Tomorrow’s Entries"
+          msg["From"] = f"Scanner <{user}>"
           msg["To"] = to
           msg.set_content(body)
 
