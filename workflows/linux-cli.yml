@@ -1,0 +1,21 @@
+name: Free Linux CLI
+
+on:
+  workflow_dispatch:   # Manual trigger (button click)
+  schedule:
+   # - cron: '0 3 * * *'  # Optional: runs daily at 3am UTC
+
+jobs:
+  run-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Run Linux commands
+        run: |
+          uname -a
+          pwd
+          ls -la
+          python3 --version
