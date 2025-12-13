@@ -26,7 +26,7 @@ jobs:
 
       - name: Run script
         run: |
-          python Stocks/TotalNarrow.py \
+          python TotalNarrow.py \
             --system 1 --allow-shorts 1 --top 300 \
             --save entries_tomorrow.csv \
             --emit-checklist 1
