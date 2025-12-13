@@ -8,6 +8,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    environment: GMAIL
 
     steps:
       - name: Checkout
