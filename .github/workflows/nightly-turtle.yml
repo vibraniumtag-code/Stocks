@@ -1,0 +1,6 @@
+Stocks/
+  TotalNarrow.py
+  requirements.txt
+.github/
+  workflows/
+    nightly-turtle.yml
