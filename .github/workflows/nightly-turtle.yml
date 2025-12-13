@@ -1,4 +1,4 @@
-- name: NarrowStockScreener
+- name: Email checklist (text body only)
   env:
     SMTP_HOST: ${{ secrets.SMTP_HOST }}
     SMTP_PORT: ${{ secrets.SMTP_PORT }}
