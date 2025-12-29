@@ -3,7 +3,7 @@ name: Nightly Turtle Scanner
 on:
   workflow_dispatch:   # manual run (button click)
   schedule:
-    - cron: "0 2 * * *"   # runs daily at 2:00 UTC
+    - cron: "0 2,15 * * *"   # runs daily at 2:00 UTC
 
 jobs:
   run-scanner:
