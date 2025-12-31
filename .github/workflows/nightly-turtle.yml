@@ -3,7 +3,7 @@ name: Nightly Turtle Scanner (Email Body)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 2,15 * * *"  # 02:00 UTC daily
+    - cron: "0 2,14 * * *"  # 02:00 UTC daily
 
 jobs:
   run:
