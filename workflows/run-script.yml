@@ -4,7 +4,7 @@ on:
   workflow_dispatch:  # manual "Run workflow" button
   # Optional schedule (remove if you don't want it)
   # schedule:
-  #   - cron: "0 3,13 * * *"  # daily 3:00 UTC
+  #   - cron: "0 3 * * *"  # daily 3:00 UTC
 
 jobs:
   run:
