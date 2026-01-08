@@ -1,51 +1,19 @@
-name: Nightly Turtle Scanner (Email Body)
-
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 2,15 * * *"  # 02:00 UTC daily
-
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    environment: GMAIL   # <-- remove this line if you're NOT using Environment secrets
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f "Stocks/requirements.txt" ]; then pip install -r Stocks/requirements.txt; fi
-          if [ -f "requirements.txt" ]; then pip install -r requirements.txt; fi
-
-      # ✅ Adjust this path to your script location:
-      - name: Run Turtle script
-        run: |
-          python TotalNarrow.py \
-            --system 1 \
-            --allow-shorts 1 \
-            --top 5000 \
-            --save entries_tomorrow.csv \
-            --emit-checklist 1
-
-      - name: Email checklist (text body only)
+      - name: Email checklist (nice HTML + text fallback)
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
         run: |
           python - <<'PY'
-          import os, glob, smtplib
+          import os, glob, smtplib, html
+          from datetime import datetime, timezone
           from email.message import EmailMessage
 
           host = (os.environ.get("SMTP_HOST") or "").strip()
@@ -54,29 +22,92 @@ jobs:
           pw   = (os.environ.get("SMTP_PASS") or "").strip()
           to   = (os.environ.get("EMAIL_TO")  or "").strip()
 
+          repo = (os.environ.get("GITHUB_REPOSITORY") or "").strip()
+          run_id = (os.environ.get("GITHUB_RUN_ID") or "").strip()
+          server = (os.environ.get("GITHUB_SERVER_URL") or "https://github.com").strip()
+          workflow = (os.environ.get("GITHUB_WORKFLOW") or "Workflow").strip()
+          ref = (os.environ.get("GITHUB_REF_NAME") or "").strip()
+
           missing = [k for k,v in [("SMTP_HOST",host),("SMTP_USER",user),("SMTP_PASS",pw),("EMAIL_TO",to)] if not v]
           if missing:
               raise SystemExit("Missing GitHub Secrets: " + ", ".join(missing))
 
           port = int(port_raw) if port_raw.isdigit() else 587
 
+          # Load newest checklist txt if present
           txt_files = sorted(glob.glob("*_checklist_*.txt"))
           if txt_files:
               with open(txt_files[-1], "r", encoding="utf-8") as f:
-                  body = f.read()
+                  body_txt = f.read().strip()
           else:
-              body = "Turtle Scanner ran, but no checklist file was found."
+              body_txt = "Turtle Scanner ran, but no checklist file was found."
+
+          # Useful metadata
+          now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+          run_url = f"{server}/{repo}/actions/runs/{run_id}" if repo and run_id else server
+
+          # Escape for HTML and preserve formatting
+          body_html_pre = html.escape(body_txt)
+
+          subject = "Scanner – Tomorrow’s Entries"
 
           msg = EmailMessage()
-          msg["Subject"] = "Scanner – Tomorrow’s Entries"
+          msg["Subject"] = subject
           msg["From"] = f"Scanner <{user}>"
           msg["To"] = to
-          msg.set_content(body)
+
+          # Plain-text fallback (what you already had, plus a link)
+          msg.set_content(
+              f"{subject}\n\n"
+              f"Repo: {repo}\n"
+              f"Workflow: {workflow}\n"
+              f"Branch: {ref}\n"
+              f"Run: {run_url}\n"
+              f"Timestamp: {now_utc}\n\n"
+              f"{body_txt}\n"
+          )
+
+          # HTML version (nice formatting)
+          msg.add_alternative(f"""\
+          <!doctype html>
+          <html>
+            <body style="margin:0;padding:0;background:#f6f8fa;font-family:Arial,Helvetica,sans-serif;">
+              <div style="max-width:760px;margin:0 auto;padding:24px;">
+                <div style="background:#111827;color:#fff;padding:18px 20px;border-radius:12px;">
+                  <div style="font-size:16px;opacity:0.9;">Nightly Turtle Scanner</div>
+                  <div style="font-size:22px;font-weight:700;margin-top:4px;">Tomorrow’s Entries</div>
+                </div>
+
+                <div style="background:#ffffff;margin-top:16px;padding:18px 20px;border-radius:12px;border:1px solid #e5e7eb;">
+                  <div style="font-size:13px;color:#374151;line-height:1.6;">
+                    <div><b>Repo:</b> {html.escape(repo)}</div>
+                    <div><b>Workflow:</b> {html.escape(workflow)}</div>
+                    <div><b>Branch:</b> {html.escape(ref)}</div>
+                    <div><b>Run:</b> <a href="{html.escape(run_url)}" style="color:#2563eb;text-decoration:none;">View in GitHub Actions</a></div>
+                    <div><b>Timestamp:</b> {html.escape(now_utc)}</div>
+                  </div>
+
+                  <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0;">
+
+                  <div style="font-size:14px;color:#111827;font-weight:700;margin-bottom:8px;">Checklist</div>
+                  <pre style="margin:0;white-space:pre-wrap;word-wrap:break-word;
+                              background:#0b1020;color:#e5e7eb;padding:14px 16px;border-radius:10px;
+                              font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+                              font-size:12.5px;line-height:1.45;">{body_html_pre}</pre>
+
+                  <div style="margin-top:14px;font-size:12px;color:#6b7280;">
+                    Sent automatically by GitHub Actions.
+                  </div>
+                </div>
+              </div>
+            </body>
+          </html>
+          """, subtype="html")
 
           with smtplib.SMTP(host, port) as s:
               s.starttls()
               s.login(user, pw)
               s.send_message(msg)
 
-          print("Email sent (text-only).")
+          print("Email sent (HTML + text fallback).")
           PY
