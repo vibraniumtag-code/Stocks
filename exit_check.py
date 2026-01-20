@@ -2,27 +2,31 @@
 """
 exit_check.py
 
-Nightly Turtle-style exit checker:
+Nightly Turtle-style exit checker (swing / daily bars):
 - Pulls daily OHLC for each ticker in positions.csv
 - Calculates ATR(14)
 - Calculates ATR stop (1.5x ATR from underlying entry)
-- Checks structure break using N-day low/high (default 10)
-- Sends an email summary (or prints to logs if email env vars missing)
+- Checks structure break using N-day window (default 10), EXCLUDING today
+- Sends an email summary (SMTP generic)
 
-CSV expected columns:
+CSV required columns:
 ticker, option_name, option_entry_price, entry_date, underlying_entry_price
 
-Notes:
-- ATR/structure are computed on the UNDERLYING, not the option premium.
-- option_name is used to infer CALL/PUT if it contains " C " or " P ".
+Direction inference:
+- If option_name contains " C " => CALL (bullish)
+- If option_name contains " P " => PUT (bearish)
+
+Structure break (default):
+- CALL: exit if Close < prior N-day LOW (or optionally prior N-day CLOSE low)
+- PUT : exit if Close > prior N-day HIGH (or optionally prior N-day CLOSE high)
 """
 
 import os
 import smtplib
+import ssl
 from email.mime.text import MIMEText
 from typing import Optional, Tuple
 
-import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -34,33 +38,41 @@ STRUCTURE_DAYS = 10
 ATR_MULTIPLIER = 1.5
 CSV_FILE = "positions.csv"
 
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT_SSL = 465
+# Structure method:
+# - "lowhigh" => compare Close vs prior N-day LOW/HIGH (stricter)
+# - "close"   => compare Close vs prior N-day CLOSE low/high (often smoother)
+STRUCTURE_METHOD = os.getenv("STRUCTURE_METHOD", "lowhigh").strip().lower()
 
-EMAIL_USER = os.getenv("EMAIL_USER", "").strip()
-EMAIL_PASS = os.getenv("EMAIL_PASS", "").strip()
+# SMTP / EMAIL (FROM GITHUB SECRETS)
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "0"))
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
 EMAIL_TO = os.getenv("EMAIL_TO", "").strip()
 
 # Email mode:
-# - "always": send daily even if no exits (default)
-# - "exits_only": send only when at least one EXIT exists
+# - "always"     => send daily summary
+# - "exits_only" => send only when at least one EXIT exists
 EMAIL_MODE = os.getenv("EMAIL_MODE", "always").strip().lower()
+
+# yfinance download window
+HISTORY_PERIOD = os.getenv("HISTORY_PERIOD", "9mo").strip()
 
 
 # =========================
 # HELPERS
 # =========================
-def flatten_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """yfinance sometimes returns MultiIndex columns; flatten to single level."""
+def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """yfinance can return MultiIndex columns; flatten to single level."""
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
 
 
-def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+def calculate_atr(df: pd.DataFrame, period: int) -> pd.Series:
     """
-    ATR using Wilder-style True Range rolling mean (simple rolling mean here).
     True Range = max(high-low, abs(high-prev_close), abs(low-prev_close))
+    ATR = rolling mean of TR
     """
     high = df["High"]
     low = df["Low"]
@@ -75,17 +87,11 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
         axis=1,
     ).max(axis=1)
 
-    atr = tr.rolling(period).mean()
-    return atr
+    return tr.rolling(period).mean()
 
 
 def infer_direction(option_name: str) -> Tuple[Optional[bool], str]:
-    """
-    Returns (is_call, label)
-      is_call=True => bullish (CALL)
-      is_call=False => bearish (PUT)
-      is_call=None => cannot infer
-    """
+    """Return (is_call, label). is_call True=CALL, False=PUT, None=unknown."""
     name = f" {option_name} "
     if " C " in name:
         return True, "CALL"
@@ -94,210 +100,175 @@ def infer_direction(option_name: str) -> Tuple[Optional[bool], str]:
     return None, "UNKNOWN"
 
 
+def smtp_ready() -> bool:
+    return all([SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO])
+
+
 def send_email(subject: str, body: str) -> None:
-    """Send email via Gmail SMTP SSL. Requires EMAIL_USER/PASS/TO to be set."""
     msg = MIMEText(body)
     msg["Subject"] = subject
-    msg["From"] = EMAIL_USER
+    msg["From"] = SMTP_USER
     msg["To"] = EMAIL_TO
 
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT_SSL) as server:
-        server.login(EMAIL_USER, EMAIL_PASS)
-        server.send_message(msg)
+    # STARTTLS is typical on 587. If your provider uses 465 SSL,
+    # set SMTP_PORT=465 and STARTTLS will still work on many providers,
+    # but best practice is to use SMTP_SSL for 465.
+    if SMTP_PORT == 465:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
 
 
-def email_ready() -> bool:
-    return bool(EMAIL_USER and EMAIL_PASS and EMAIL_TO)
-
-
-def safe_float(x) -> Optional[float]:
+def to_float(x) -> Optional[float]:
     try:
-        if pd.isna(x):
+        v = float(x)
+        if pd.isna(v):
             return None
-        return float(x)
+        return v
     except Exception:
         return None
 
 
+def prior_window(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    """
+    Return the PRIOR n rows excluding today's row.
+    Uses df.iloc[-(n+1):-1].
+    """
+    return df.iloc[-(n + 1) : -1]
+
+
 # =========================
-# MAIN LOGIC
+# MAIN
 # =========================
 def main() -> None:
-    # Load positions
     if not os.path.exists(CSV_FILE):
-        raise FileNotFoundError(
-            f"Could not find {CSV_FILE}. Place it in the repo root (same folder as exit_check.py)."
-        )
+        raise FileNotFoundError("positions.csv not found in repo root")
 
     positions = pd.read_csv(CSV_FILE)
 
-    required_cols = {"ticker", "option_name", "option_entry_price", "underlying_entry_price"}
+    required_cols = {"ticker", "option_name", "underlying_entry_price"}
     missing = required_cols - set(positions.columns)
     if missing:
-        raise ValueError(
-            f"positions.csv missing columns: {sorted(missing)}. "
-            f"Required: {sorted(required_cols)}"
-        )
+        raise ValueError(f"positions.csv missing required columns: {sorted(missing)}")
 
-    report_blocks = []
+    report = []
     exit_found = False
 
-    for idx, row in positions.iterrows():
-        ticker = str(row["ticker"]).strip().upper()
-        option_name = str(row["option_name"]).strip()
+    min_needed = max(ATR_PERIOD, STRUCTURE_DAYS) + 5  # extra buffer for safety
 
-        underlying_entry = safe_float(row.get("underlying_entry_price"))
-        option_entry = safe_float(row.get("option_entry_price"))
+    for _, row in positions.iterrows():
+        ticker = str(row.get("ticker", "")).strip().upper()
+        option_name = str(row.get("option_name", "")).strip()
+        entry_underlying = to_float(row.get("underlying_entry_price"))
+        option_entry = to_float(row.get("option_entry_price"))  # informational only
 
-        is_call, dir_label = infer_direction(option_name)
+        is_call, direction = infer_direction(option_name)
 
-        # Basic validation
-        if not ticker or ticker == "NAN":
-            report_blocks.append(f"Row {idx+1}: Invalid ticker.")
-            continue
-
-        if underlying_entry is None:
-            report_blocks.append(
-                f"""Ticker: {ticker}
-Option: {option_name}
-Action: HOLD (NO CHECK)
-Reason: Missing underlying_entry_price in CSV (cannot compute ATR stop / structure properly).
-"""
-                .strip()
-            )
-            continue
-
-        if is_call is None:
-            report_blocks.append(
-                f"""Ticker: {ticker}
-Option: {option_name}
-Action: HOLD (NO CHECK)
-Reason: Cannot infer CALL/PUT from option_name. Include ' C ' or ' P ' in the name.
-"""
-                .strip()
-            )
+        if not ticker or entry_underlying is None or is_call is None:
+            report.append(f"{ticker or 'UNKNOWN'}: SKIPPED (invalid row: ticker/entry/direction)")
             continue
 
         # Pull daily data
-        df = yf.download(ticker, period="9mo", interval="1d", progress=False)
+        df = yf.download(ticker, period=HISTORY_PERIOD, interval="1d", progress=False)
+
         if df is None or df.empty:
-            report_blocks.append(
-                f"""Ticker: {ticker}
-Option: {option_name}
-Action: HOLD (NO CHECK)
-Reason: No market data returned from yfinance.
-"""
-                .strip()
-            )
+            report.append(f"{ticker}: NO DATA")
             continue
 
-        df = flatten_yf_columns(df)
-        df = df.dropna()
+        df = flatten_columns(df).dropna()
 
-        min_needed = max(ATR_PERIOD, STRUCTURE_DAYS) + 2
         if len(df) < min_needed:
-            report_blocks.append(
-                f"""Ticker: {ticker}
-Option: {option_name}
-Action: HOLD (NO CHECK)
-Reason: Not enough data ({len(df)} rows). Need at least {min_needed}.
-"""
-                .strip()
-            )
+            report.append(f"{ticker}: SKIPPED (not enough history: {len(df)} rows)")
             continue
 
-        # Compute indicators (force scalars to avoid "Series is ambiguous" errors)
+        # Calculate ATR safely
         atr_series = calculate_atr(df, ATR_PERIOD)
-        atr_val = atr_series.iloc[-1]
-        if pd.isna(atr_val):
-            report_blocks.append(
-                f"""Ticker: {ticker}
-Option: {option_name}
-Action: HOLD (NO CHECK)
-Reason: ATR is NaN (insufficient rolling window / data issues).
-"""
-                .strip()
-            )
+        atr_last = atr_series.iloc[-1]
+        if pd.isna(atr_last):
+            report.append(f"{ticker}: SKIPPED (ATR is NaN)")
             continue
 
-        atr = float(atr_val)
+        atr = float(atr_last)
         close = float(df["Close"].iloc[-1])
 
-        recent = df.iloc[-STRUCTURE_DAYS:]
-        low_n = float(recent["Low"].min())
-        high_n = float(recent["High"].max())
+        # Structure window EXCLUDING today
+        w = prior_window(df, STRUCTURE_DAYS)
+        if w.empty or len(w) < STRUCTURE_DAYS:
+            report.append(f"{ticker}: SKIPPED (structure window too small)")
+            continue
 
-        # ATR stop and structure break logic
-        if is_call:
-            # Bullish: stop below entry, structure break if close < N-day low
-            atr_stop = float(underlying_entry - ATR_MULTIPLIER * atr)
-            atr_hit = bool(close <= atr_stop)
-            structure_hit = bool(close < low_n)
-            structure_desc = f"Close < {STRUCTURE_DAYS}-day low"
+        if STRUCTURE_METHOD == "close":
+            low_level = float(w["Close"].min())
+            high_level = float(w["Close"].max())
+            level_label = f"Prior {STRUCTURE_DAYS}-day Close Low/High"
         else:
-            # Bearish: stop above entry, structure break if close > N-day high
-            atr_stop = float(underlying_entry + ATR_MULTIPLIER * atr)
-            atr_hit = bool(close >= atr_stop)
-            structure_hit = bool(close > high_n)
-            structure_desc = f"Close > {STRUCTURE_DAYS}-day high"
+            # default: "lowhigh"
+            low_level = float(w["Low"].min())
+            high_level = float(w["High"].max())
+            level_label = f"Prior {STRUCTURE_DAYS}-day Low/High"
 
-        # Decision priority: ATR stop first, then structure
+        # Signals
+        if is_call:
+            atr_stop = float(entry_underlying - ATR_MULTIPLIER * atr)
+            atr_hit = bool(close <= atr_stop)
+            structure_hit = bool(close < low_level)
+        else:
+            atr_stop = float(entry_underlying + ATR_MULTIPLIER * atr)
+            atr_hit = bool(close >= atr_stop)
+            structure_hit = bool(close > high_level)
+
+        # Decision priority
         if atr_hit:
             action = "EXIT"
             reason = f"ATR stop hit ({ATR_MULTIPLIER}x ATR)"
             exit_found = True
         elif structure_hit:
             action = "EXIT"
-            reason = f"Structure break: {structure_desc}"
+            reason = f"Structure break ({STRUCTURE_METHOD}): {level_label}"
             exit_found = True
         else:
             action = "HOLD"
             reason = "Trend intact"
 
-        # Optional context: unrealized option PnL (informational only)
-        opt_pnl_txt = ""
-        if option_entry is not None:
-            # We don't fetch option price here (needs option chain). Keep it simple.
-            opt_pnl_txt = f"\nOption entry (for reference): {option_entry:.2f}"
+        opt_entry_txt = f"{option_entry:.2f}" if option_entry is not None else "N/A"
 
-        report_blocks.append(
-            f"""Ticker: {ticker} ({dir_label})
+        report.append(
+            f"""Ticker: {ticker} ({direction})
 Option: {option_name}
 Action: {action}
 Reason: {reason}
-Underlying Entry: {underlying_entry:.2f}
+Underlying Entry: {entry_underlying:.2f}
 Close: {close:.2f}
 ATR({ATR_PERIOD}): {atr:.2f}
-ATR Stop ({ATR_MULTIPLIER}x): {atr_stop:.2f}
-{STRUCTURE_DAYS}-Day Low/High: {low_n:.2f} / {high_n:.2f}{opt_pnl_txt}
+ATR Stop: {atr_stop:.2f}
+{level_label}: {low_level:.2f} / {high_level:.2f}
+Option Entry (ref): {opt_entry_txt}
 """
-            .strip()
         )
 
-    # Build email/log output
     subject = "🚨 EXIT SIGNALS – Daily Check" if exit_found else "✅ Daily Trend Check – No Action"
-    body = "\n\n" + ("-" * 28) + "\n\n"
-    body = body.join(report_blocks) if report_blocks else "No positions found in positions.csv."
+    body = "\n-------------------------\n".join(report) if report else "No valid positions found in positions.csv."
 
-    # Email mode logic
-    should_send = True
-    if EMAIL_MODE == "exits_only" and not exit_found:
-        should_send = False
-
-    if not email_ready():
-        # No secrets set; print to logs so workflow still succeeds for testing
-        print("EMAIL secrets not set (EMAIL_USER/EMAIL_PASS/EMAIL_TO). Printing report to logs.\n")
+    if not smtp_ready():
+        print("SMTP secrets not set — printing report instead\n")
         print(subject)
         print(body)
         return
 
-    if should_send:
-        send_email(subject, body)
-        print(f"Email sent: {subject}")
-    else:
-        print("No exits found and EMAIL_MODE=exits_only. No email sent.")
-        print(subject)
-        print(body)
+    if EMAIL_MODE == "exits_only" and not exit_found:
+        print("No exits found — email suppressed (EMAIL_MODE=exits_only)")
+        return
+
+    send_email(subject, body)
+    print("Email sent successfully")
 
 
 if __name__ == "__main__":
