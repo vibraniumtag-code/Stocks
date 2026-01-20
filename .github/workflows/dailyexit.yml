@@ -8,6 +8,8 @@ on:
 jobs:
   run-exit-check:
     runs-on: ubuntu-latest
+    environment: GMAIL   # <-- remove this line if you're NOT using Environment secrets
+
 
     steps:
       - name: Checkout repo
