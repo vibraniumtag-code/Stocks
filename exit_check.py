@@ -45,7 +45,9 @@ STRUCTURE_METHOD = os.getenv("STRUCTURE_METHOD", "lowhigh").strip().lower()
 
 # SMTP / EMAIL (FROM GITHUB SECRETS)
 SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "0"))
+SMTP_PORT_RAW = (os.getenv("SMTP_PORT") or "").strip()
+SMTP_PORT = int(SMTP_PORT_RAW) if SMTP_PORT_RAW.isdigit() else 0
+
 SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
 EMAIL_TO = os.getenv("EMAIL_TO", "").strip()
