@@ -1,0 +1,31 @@
+name: Daily Exit Check
+
+on:
+  schedule:
+    - cron: "0 1 * * 1-5"   # Mon–Fri at 01:00 UTC (9:00 PM ET)
+  workflow_dispatch:       # manual run button
+
+jobs:
+  run-exit-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance pandas numpy ta
+
+      - name: Run exit scan
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+        run: |
+          python exit_check.py
