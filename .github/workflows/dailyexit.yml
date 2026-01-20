@@ -1,190 +1,38 @@
-#!/usr/bin/env python3
-"""
-exit_check.py
+name: Daily Exit Check
 
-Nightly Turtle-style exit checker:
-- Pulls daily OHLC for each ticker in positions.csv
-- Calculates ATR(14)
-- Calculates ATR stop (1.5x ATR from underlying entry)
-- Checks structure break using N-day low/high (default 10)
-- Sends an email summary (SMTP generic)
+on:
+  schedule:
+    - cron: "0 1 * * 1-5"   # Mon–Fri 01:00 UTC (9:00 PM ET / Toronto)
+  workflow_dispatch:
 
-CSV required columns:
-ticker, option_name, option_entry_price, entry_date, underlying_entry_price
-"""
+jobs:
+  run-exit-check:
+    runs-on: ubuntu-latest
 
-import os
-import smtplib
-from email.mime.text import MIMEText
-from typing import Optional, Tuple
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-import pandas as pd
-import yfinance as yf
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-# =========================
-# CONFIG
-# =========================
-ATR_PERIOD = 14
-STRUCTURE_DAYS = 10
-ATR_MULTIPLIER = 1.5
-CSV_FILE = "positions.csv"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy
 
-# SMTP / EMAIL (FROM GITHUB SECRETS)
-SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "0"))
-SMTP_USER = os.getenv("SMTP_USER", "").strip()
-SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
-EMAIL_TO = os.getenv("EMAIL_TO", "").strip()
-
-EMAIL_MODE = os.getenv("EMAIL_MODE", "always").lower()  # always | exits_only
-
-
-# =========================
-# HELPERS
-# =========================
-def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
-
-
-def calculate_atr(df: pd.DataFrame, period: int) -> pd.Series:
-    high = df["High"]
-    low = df["Low"]
-    close = df["Close"]
-
-    tr = pd.concat(
-        [
-            high - low,
-            (high - close.shift()).abs(),
-            (low - close.shift()).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-
-    return tr.rolling(period).mean()
-
-
-def infer_direction(option_name: str) -> Tuple[Optional[bool], str]:
-    name = f" {option_name} "
-    if " C " in name:
-        return True, "CALL"
-    if " P " in name:
-        return False, "PUT"
-    return None, "UNKNOWN"
-
-
-def smtp_ready() -> bool:
-    return all([SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO])
-
-
-def send_email(subject: str, body: str):
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = SMTP_USER
-    msg["To"] = EMAIL_TO
-
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASS)
-        server.send_message(msg)
-
-
-def f(x) -> Optional[float]:
-    try:
-        return float(x)
-    except Exception:
-        return None
-
-
-# =========================
-# MAIN
-# =========================
-def main():
-    if not os.path.exists(CSV_FILE):
-        raise FileNotFoundError("positions.csv not found in repo root")
-
-    positions = pd.read_csv(CSV_FILE)
-
-    report = []
-    exit_found = False
-
-    for _, row in positions.iterrows():
-        ticker = str(row["ticker"]).strip().upper()
-        option_name = str(row["option_name"]).strip()
-        entry_underlying = f(row["underlying_entry_price"])
-        option_entry = f(row["option_entry_price"])
-
-        is_call, direction = infer_direction(option_name)
-
-        if not ticker or entry_underlying is None or is_call is None:
-            report.append(f"{ticker}: SKIPPED (invalid row)")
-            continue
-
-        df = yf.download(ticker, period="9mo", interval="1d", progress=False)
-        if df.empty:
-            report.append(f"{ticker}: NO DATA")
-            continue
-
-        df = flatten_columns(df).dropna()
-
-        atr_series = calculate_atr(df, ATR_PERIOD)
-        atr = float(atr_series.iloc[-1])
-        close = float(df["Close"].iloc[-1])
-
-        recent = df.iloc[-STRUCTURE_DAYS:]
-        low_n = float(recent["Low"].min())
-        high_n = float(recent["High"].max())
-
-        if is_call:
-            atr_stop = entry_underlying - ATR_MULTIPLIER * atr
-            atr_hit = close <= atr_stop
-            structure_hit = close < low_n
-        else:
-            atr_stop = entry_underlying + ATR_MULTIPLIER * atr
-            atr_hit = close >= atr_stop
-            structure_hit = close > high_n
-
-        if atr_hit:
-            action = "EXIT"
-            reason = "ATR stop hit"
-            exit_found = True
-        elif structure_hit:
-            action = "EXIT"
-            reason = f"{STRUCTURE_DAYS}-day structure break"
-            exit_found = True
-        else:
-            action = "HOLD"
-            reason = "Trend intact"
-
-        report.append(
-            f"""Ticker: {ticker} ({direction})
-Option: {option_name}
-Action: {action}
-Reason: {reason}
-Close: {close:.2f}
-ATR: {atr:.2f}
-ATR Stop: {atr_stop:.2f}
-{STRUCTURE_DAYS}-Day Low/High: {low_n:.2f} / {high_n:.2f}
-"""
-        )
-
-    subject = "🚨 EXIT SIGNALS – Daily Check" if exit_found else "✅ Daily Trend Check – No Action"
-    body = "\n-------------------------\n".join(report)
-
-    if not smtp_ready():
-        print("SMTP secrets not set — printing report instead\n")
-        print(subject)
-        print(body)
-        return
-
-    if EMAIL_MODE == "exits_only" and not exit_found:
-        print("No exits found — email suppressed")
-        return
-
-    send_email(subject, body)
-    print("Email sent successfully")
-
-
-if __name__ == "__main__":
-    main()
+      - name: Run exit checker
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+          # Optional:
+          # EMAIL_MODE: exits_only      # only email if an EXIT exists
+          # STRUCTURE_METHOD: close     # use prior N-day close low/high instead of low/high
+          # HISTORY_PERIOD: 9mo         # yfinance history window
+        run: |
+          python exit_check.py
