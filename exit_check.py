@@ -2,10 +2,10 @@
 """
 exit_check.py
 
-Nightly Turtle-style exit checker with dual structure exits:
-- ATR stop (1.5x ATR from underlying entry)
-- 10-day structure break (core trend)
-- 5-day structure break (profit protection)
+Nightly Turtle-style exit checker with TWO independent structure (trend) checks:
+- ATR stop (1.5x ATR from underlying entry) - reported, but does not override the per-window statuses
+- 10-day structure status (trend intact/broken) + action (HOLD/SELL)
+- 5-day structure status (trend intact/broken) + action (HOLD/SELL)
 
 Structure windows EXCLUDE today.
 """
@@ -25,8 +25,8 @@ import yfinance as yf
 ATR_PERIOD = 14
 ATR_MULTIPLIER = 1.5
 
-STRUCTURE_PRIMARY = 10   # core trend
-STRUCTURE_TIGHT = 5      # profit protection
+STRUCTURE_10 = 10
+STRUCTURE_5 = 5
 
 CSV_FILE = "positions.csv"
 
@@ -116,6 +116,14 @@ def prior_window(df: pd.DataFrame, n: int) -> pd.DataFrame:
     return df.iloc[-(n + 1):-1]
 
 
+def fmt_action(is_sell: bool) -> str:
+    return "SELL" if is_sell else "HOLD"
+
+
+def fmt_trend(is_broken: bool) -> str:
+    return "BROKEN" if is_broken else "INTACT"
+
+
 # =========================
 # MAIN
 # =========================
@@ -126,32 +134,34 @@ def main():
     positions = pd.read_csv(CSV_FILE)
 
     report = []
-    exit_found = False
+    any_sell_signal = False
 
-    min_needed = max(ATR_PERIOD, STRUCTURE_PRIMARY) + 5
+    # Need enough rows for ATR and both structure windows
+    min_needed = max(ATR_PERIOD, STRUCTURE_10) + 5
 
     for _, row in positions.iterrows():
-        ticker = str(row["ticker"]).strip().upper()
-        option_name = str(row["option_name"]).strip()
-        entry_underlying = to_float(row["underlying_entry_price"])
+        ticker = str(row.get("ticker", "")).strip().upper()
+        option_name = str(row.get("option_name", "")).strip()
+        entry_underlying = to_float(row.get("underlying_entry_price"))
 
         is_call, direction = infer_direction(option_name)
 
         if not ticker or entry_underlying is None or is_call is None:
-            report.append(f"{ticker}: SKIPPED (invalid row)")
+            report.append(f"{ticker or 'UNKNOWN'}: SKIPPED (invalid row)")
             continue
 
         df = yf.download(ticker, period=HISTORY_PERIOD, interval="1d", progress=False)
-        if df.empty:
+        if df is None or df.empty:
             report.append(f"{ticker}: NO DATA")
             continue
 
         df = flatten_columns(df).dropna()
 
         if len(df) < min_needed:
-            report.append(f"{ticker}: SKIPPED (insufficient history)")
+            report.append(f"{ticker}: SKIPPED (insufficient history: {len(df)} rows)")
             continue
 
+        # ATR
         atr_series = calculate_atr(df, ATR_PERIOD)
         atr_last = atr_series.iloc[-1]
         if pd.isna(atr_last):
@@ -161,57 +171,60 @@ def main():
         atr = float(atr_last)
         close = float(df["Close"].iloc[-1])
 
-        # === Structure windows (exclude today)
-        w10 = prior_window(df, STRUCTURE_PRIMARY)
-        w5 = prior_window(df, STRUCTURE_TIGHT)
+        # Prior windows (exclude today)
+        w10 = prior_window(df, STRUCTURE_10)
+        w5 = prior_window(df, STRUCTURE_5)
 
         low10, high10 = float(w10["Low"].min()), float(w10["High"].max())
         low5, high5 = float(w5["Low"].min()), float(w5["High"].max())
 
-        # === ATR stop
+        # ATR stop (reported)
         if is_call:
-            atr_stop = entry_underlying - ATR_MULTIPLIER * atr
-            atr_hit = close <= atr_stop
-            break_10 = close < low10
-            break_5 = close < low5
-        else:
-            atr_stop = entry_underlying + ATR_MULTIPLIER * atr
-            atr_hit = close >= atr_stop
-            break_10 = close > high10
-            break_5 = close > high5
+            atr_stop = float(entry_underlying - ATR_MULTIPLIER * atr)
+            atr_hit = bool(close <= atr_stop)
 
-        # === Decision priority
-        if atr_hit:
-            action = "EXIT"
-            reason = "ATR stop hit"
-            exit_found = True
-        elif break_10:
-            action = "EXIT"
-            reason = f"{STRUCTURE_PRIMARY}-day structure break (trend)"
-            exit_found = True
-        elif break_5:
-            action = "EXIT"
-            reason = f"{STRUCTURE_TIGHT}-day structure break (profit protection)"
-            exit_found = True
+            broken10 = bool(close < low10)
+            broken5 = bool(close < low5)
         else:
-            action = "HOLD"
-            reason = "Trend intact"
+            atr_stop = float(entry_underlying + ATR_MULTIPLIER * atr)
+            atr_hit = bool(close >= atr_stop)
+
+            broken10 = bool(close > high10)
+            broken5 = bool(close > high5)
+
+        # Two independent statuses/actions
+        action10 = fmt_action(broken10 or atr_hit)  # include ATR hit as SELL signal too
+        trend10 = fmt_trend(broken10)
+
+        action5 = fmt_action(broken5 or atr_hit)    # include ATR hit as SELL signal too
+        trend5 = fmt_trend(broken5)
+
+        # If either window says SELL, flag for email subject
+        if action10 == "SELL" or action5 == "SELL":
+            any_sell_signal = True
+
+        # Add context on why SELL if ATR is the reason
+        atr_note = " (ATR STOP HIT)" if atr_hit else ""
 
         report.append(
             f"""Ticker: {ticker} ({direction})
 Option: {option_name}
-Action: {action}
-Reason: {reason}
 Close: {close:.2f}
 ATR({ATR_PERIOD}): {atr:.2f}
-ATR Stop: {atr_stop:.2f}
+ATR Stop ({ATR_MULTIPLIER}x): {atr_stop:.2f}{atr_note}
 Prior 10d Low/High: {low10:.2f} / {high10:.2f}
 Prior 5d  Low/High: {low5:.2f} / {high5:.2f}
+
+10 Days action: {action10}
+10 Days trend : {trend10}
+
+5 Days action : {action5}
+5 Days trend  : {trend5}
 """
         )
 
-    subject = "🚨 EXIT SIGNALS – Daily Check" if exit_found else "✅ Daily Trend Check – No Action"
-    body = "\n-------------------------\n".join(report)
+    subject = "🚨 SELL SIGNALS – Daily Check" if any_sell_signal else "✅ Daily Trend Check – All Intact"
+    body = "\n-------------------------\n".join(report) if report else "No valid positions found in positions.csv."
 
     if not smtp_ready():
         print("SMTP secrets not set — printing report instead\n")
@@ -219,7 +232,7 @@ Prior 5d  Low/High: {low5:.2f} / {high5:.2f}
         print(body)
         return
 
-    if EMAIL_MODE == "exits_only" and not exit_found:
+    if EMAIL_MODE == "exits_only" and not any_sell_signal:
         return
 
     send_email(subject, body)
