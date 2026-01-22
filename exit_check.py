@@ -2,23 +2,24 @@
 """
 exit_check.py
 
-Nightly / intraday Turtle-style exit checker with TWO evaluation modes:
+Exit checker with TWO evaluation modes:
 
-A) Based on "CLOSE" (last available daily close in yfinance data)
-B) Based on "CURRENT" (live-ish last price from yfinance fast_info, when available)
+A) Based on "CLOSE"  (last available daily close from yfinance 1d bars)
+B) Based on "CURRENT" (best-effort intraday/last price)
 
-For each mode, we output TWO independent trend checks:
-- 10 Days: trend intact/broken + action HOLD/SELL
-- 5 Days : trend intact/broken + action HOLD/SELL
+For each mode, outputs TWO independent trend checks:
+- 10 Days: action HOLD/SELL + trend INTACT/BROKEN
+- 5 Days : action HOLD/SELL + trend INTACT/BROKEN
 
-We also compute ATR(14) from completed daily bars (excluding today's partial bar when present).
-ATR stop is included in actions for both CLOSE and CURRENT modes:
-- CALL: SELL if price <= entry - 1.5*ATR
-- PUT : SELL if price >= entry + 1.5*ATR
+Structure levels + ATR are computed from COMPLETED daily bars only
+(today's partial bar is excluded when present).
 
 CSV required columns:
 ticker, option_name, underlying_entry_price
 (option_name must contain " C " for calls or " P " for puts)
+
+SMTP env vars (GitHub Secrets):
+SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
 """
 
 import os
@@ -49,11 +50,7 @@ SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
 EMAIL_TO = os.getenv("EMAIL_TO", "").strip()
 
-# Email mode:
-# - "always"     => send daily summary
-# - "exits_only" => send only when at least one SELL exists (in any mode)
-EMAIL_MODE = os.getenv("EMAIL_MODE", "always").strip().lower()
-
+EMAIL_MODE = os.getenv("EMAIL_MODE", "always").strip().lower()  # always | exits_only
 HISTORY_PERIOD = os.getenv("HISTORY_PERIOD", "9mo").strip()
 
 
@@ -110,10 +107,6 @@ def send_email(subject: str, body: str) -> None:
 
 
 def calculate_atr(df: pd.DataFrame, period: int) -> pd.Series:
-    """
-    True Range = max(high-low, abs(high-prev_close), abs(low-prev_close))
-    ATR = rolling mean of TR
-    """
     high = df["High"]
     low = df["Low"]
     close = df["Close"]
@@ -130,60 +123,73 @@ def calculate_atr(df: pd.DataFrame, period: int) -> pd.Series:
     return tr.rolling(period).mean()
 
 
-def get_current_price(ticker: str, fallback: float) -> float:
-    """
-    Try to fetch a live-ish current/last price.
-    If unavailable, return fallback (usually latest daily close).
-    """
-    try:
-        t = yf.Ticker(ticker)
-        fi = getattr(t, "fast_info", None)
-        if fi:
-            # yfinance fast_info often exposes last_price
-            lp = fi.get("last_price", None)
-            if lp is not None:
-                return float(lp)
-    except Exception:
-        pass
-    return float(fallback)
-
-
 def remove_today_partial_bar(df: pd.DataFrame) -> pd.DataFrame:
     """
     If yfinance includes a row for today's date (often partial intraday),
-    drop it so indicators/structure windows are based on completed bars only.
+    drop it so indicators/structure levels use completed bars only.
     """
     if df.empty:
         return df
     try:
-        today = pd.Timestamp.utcnow().date()
+        today_utc = pd.Timestamp.utcnow().date()
         last_date = pd.Timestamp(df.index[-1]).date()
-        if last_date == today:
+        if last_date == today_utc:
             return df.iloc[:-1]
     except Exception:
-        # If index isn't date-like, do nothing
         pass
     return df
 
 
 def prior_window(df_completed: pd.DataFrame, n: int) -> pd.DataFrame:
-    """
-    Return prior n rows excluding the most recent completed bar:
-    - If df_completed ends at yesterday, we exclude that last completed bar to get "prior n".
-    This matches "prior N days excluding the evaluation day".
-    """
+    """Return prior n rows excluding the most recent completed bar."""
     return df_completed.iloc[-(n + 1):-1]
 
 
-def action_and_trend(broken: bool, atr_hit: bool) -> Tuple[str, str]:
-    """
-    Returns (action, trend_status) for a structure window.
-    - trend_status: INTACT/BROKEN based on structure only
-    - action: SELL if (broken OR atr_hit) else HOLD
-    """
-    trend = "BROKEN" if broken else "INTACT"
-    action = "SELL" if (broken or atr_hit) else "HOLD"
+def action_and_trend(structure_broken: bool, atr_hit: bool) -> Tuple[str, str]:
+    trend = "BROKEN" if structure_broken else "INTACT"
+    action = "SELL" if (structure_broken or atr_hit) else "HOLD"
     return action, trend
+
+
+def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
+    """
+    Best-effort current/last price with a source label:
+    1) fast_info.last_price
+    2) info.regularMarketPrice
+    3) 1m intraday history last close
+    Fallback to provided value if all fail.
+    """
+    t = yf.Ticker(ticker)
+
+    # 1) fast_info
+    try:
+        fi = getattr(t, "fast_info", None)
+        if fi:
+            lp = fi.get("last_price", None)
+            if lp is not None:
+                return float(lp), "fast_info.last_price"
+    except Exception:
+        pass
+
+    # 2) info
+    try:
+        info = getattr(t, "info", None)
+        if isinstance(info, dict):
+            rmp = info.get("regularMarketPrice", None)
+            if rmp is not None:
+                return float(rmp), "info.regularMarketPrice"
+    except Exception:
+        pass
+
+    # 3) 1-minute intraday last bar
+    try:
+        intraday = t.history(period="1d", interval="1m")
+        if intraday is not None and not intraday.empty and "Close" in intraday.columns:
+            return float(intraday["Close"].iloc[-1]), "history(1d,1m).last_close"
+    except Exception:
+        pass
+
+    return float(fallback), "fallback_daily_close"
 
 
 # =========================
@@ -216,7 +222,7 @@ def main():
             report.append(f"{ticker or 'UNKNOWN'}: SKIPPED (invalid row: ticker/entry/direction)")
             continue
 
-        # Pull daily data
+        # Daily bars (may include today's partial row depending on timing)
         df = yf.download(ticker, period=HISTORY_PERIOD, interval="1d", progress=False)
         if df is None or df.empty:
             report.append(f"{ticker}: NO DATA")
@@ -224,20 +230,19 @@ def main():
 
         df = flatten_columns(df).dropna()
 
-        # "Close-based" uses the last available daily close in df (may be today-so-far if market open)
+        # Close-based price is the last daily close from the downloaded daily bars
         close_price = float(df["Close"].iloc[-1])
 
-        # "Current-based" tries to fetch last_price; falls back to close_price
-        current_price = get_current_price(ticker, fallback=close_price)
+        # Current-based price is best-effort intraday/last
+        current_price, current_src = get_current_price(ticker, fallback=close_price)
 
-        # For ATR/structure levels, use completed bars (drop today's partial if present)
+        # Compute levels from completed bars only
         df_completed = remove_today_partial_bar(df).dropna()
 
         if len(df_completed) < min_needed:
             report.append(f"{ticker}: SKIPPED (insufficient completed history: {len(df_completed)} rows)")
             continue
 
-        # ATR from completed bars
         atr_series = calculate_atr(df_completed, ATR_PERIOD)
         atr_last = atr_series.iloc[-1]
         if pd.isna(atr_last):
@@ -245,7 +250,7 @@ def main():
             continue
         atr = float(atr_last)
 
-        # Structure levels from completed bars (exclude the evaluation day by using prior_window)
+        # Structure levels (exclude the evaluation day) using completed bars
         w10 = prior_window(df_completed, STRUCTURE_10)
         w5 = prior_window(df_completed, STRUCTURE_5)
 
@@ -256,33 +261,37 @@ def main():
         low10, high10 = float(w10["Low"].min()), float(w10["High"].max())
         low5, high5 = float(w5["Low"].min()), float(w5["High"].max())
 
-        # ATR stop value (same for both modes)
+        # ATR stop value (same for both modes; ATR from completed bars)
         if is_call:
             atr_stop = float(entry_underlying - ATR_MULTIPLIER * atr)
-            # Structure breaks for CALL: price < prior N-day low
+
+            # Structure breaks
             broken10_close = bool(close_price < low10)
             broken5_close = bool(close_price < low5)
             broken10_current = bool(current_price < low10)
             broken5_current = bool(current_price < low5)
 
+            # ATR hits
             atr_hit_close = bool(close_price <= atr_stop)
             atr_hit_current = bool(current_price <= atr_stop)
         else:
             atr_stop = float(entry_underlying + ATR_MULTIPLIER * atr)
-            # Structure breaks for PUT: price > prior N-day high
+
+            # Structure breaks
             broken10_close = bool(close_price > high10)
             broken5_close = bool(close_price > high5)
             broken10_current = bool(current_price > high10)
             broken5_current = bool(current_price > high5)
 
+            # ATR hits
             atr_hit_close = bool(close_price >= atr_stop)
             atr_hit_current = bool(current_price >= atr_stop)
 
-        # Build status/action for CLOSE mode
+        # Close-mode actions/trends
         action10_close, trend10_close = action_and_trend(broken10_close, atr_hit_close)
         action5_close, trend5_close = action_and_trend(broken5_close, atr_hit_close)
 
-        # Build status/action for CURRENT mode
+        # Current-mode actions/trends
         action10_current, trend10_current = action_and_trend(broken10_current, atr_hit_current)
         action5_current, trend5_current = action_and_trend(broken5_current, atr_hit_current)
 
@@ -301,7 +310,7 @@ def main():
             f"""Ticker: {ticker} ({direction})
 Option: {option_name}
 
-Completed-bars levels:
+Levels (from completed daily bars):
 ATR({ATR_PERIOD}): {atr:.2f}
 ATR Stop ({ATR_MULTIPLIER}x): {atr_stop:.2f}
 Prior 10d Low/High: {low10:.2f} / {high10:.2f}
@@ -310,6 +319,7 @@ Prior 5d  Low/High: {low5:.2f} / {high5:.2f}
 Prices:
 Close price used:   {close_price:.2f}{atr_note_close}
 Current price used: {current_price:.2f}{atr_note_current}
+Current source:     {current_src}
 
 === Based on CLOSE price ===
 10 Days action : {action10_close}
