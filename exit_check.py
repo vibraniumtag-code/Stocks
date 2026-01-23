@@ -4,12 +4,20 @@ exit_check.py
 
 Exit checker with TWO evaluation modes:
 
-A) Based on "CLOSE"  (last available daily close from yfinance 1d bars)
+A) Based on "CLOSE"   (last available daily close from yfinance 1d bars)
 B) Based on "CURRENT" (best-effort intraday/last price)
 
 For each mode, outputs TWO independent trend checks:
 - 10 Days: action HOLD/SELL + trend INTACT/BROKEN
 - 5 Days : action HOLD/SELL + trend INTACT/BROKEN
+
+PLUS: ATR ADVICE (not just ATR hit)
+- Computes distance to ATR stop in BOTH dollars and ATR units
+- Gives an "ATR advice" label:
+    - STOP HIT
+    - VERY CLOSE (<= 0.25 ATR from stop)
+    - CLOSE (<= 0.50 ATR from stop)
+    - OK (> 0.50 ATR from stop)
 
 Structure levels + ATR are computed from COMPLETED daily bars only
 (today's partial bar is excluded when present).
@@ -39,6 +47,10 @@ ATR_MULTIPLIER = 1.5
 
 STRUCTURE_10 = 10
 STRUCTURE_5 = 5
+
+# ATR proximity advice thresholds (in ATR units)
+ATR_VERY_CLOSE = float(os.getenv("ATR_VERY_CLOSE", "0.25"))  # <= 0.25 ATR from stop
+ATR_CLOSE = float(os.getenv("ATR_CLOSE", "0.50"))            # <= 0.50 ATR from stop
 
 CSV_FILE = "positions.csv"
 
@@ -192,6 +204,38 @@ def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
     return float(fallback), "fallback_daily_close"
 
 
+def atr_advice(is_call: bool, price: float, atr_stop: float, atr: float) -> Tuple[str, float, float]:
+    """
+    Returns:
+      advice_text, distance_dollars, distance_atr_units
+
+    distance is "how much room until the stop" (positive means safe, negative means beyond stop):
+      CALL: distance = price - atr_stop
+      PUT : distance = atr_stop - price
+    """
+    if atr <= 0:
+        return "ATR unavailable", 0.0, 0.0
+
+    if is_call:
+        dist = float(price - atr_stop)
+        hit = price <= atr_stop
+    else:
+        dist = float(atr_stop - price)
+        hit = price >= atr_stop
+
+    dist_atr = float(dist / atr)
+
+    if hit:
+        return "STOP HIT", dist, dist_atr
+
+    # dist_atr > 0 means room left; smaller is closer to stop
+    if dist_atr <= ATR_VERY_CLOSE:
+        return f"VERY CLOSE (≤ {ATR_VERY_CLOSE:.2f} ATR)", dist, dist_atr
+    if dist_atr <= ATR_CLOSE:
+        return f"CLOSE (≤ {ATR_CLOSE:.2f} ATR)", dist, dist_atr
+    return "OK", dist, dist_atr
+
+
 # =========================
 # MAIN
 # =========================
@@ -261,29 +305,29 @@ def main():
         low10, high10 = float(w10["Low"].min()), float(w10["High"].max())
         low5, high5 = float(w5["Low"].min()), float(w5["High"].max())
 
-        # ATR stop value (same for both modes; ATR from completed bars)
+        # ATR stop value (ATR from completed bars)
         if is_call:
             atr_stop = float(entry_underlying - ATR_MULTIPLIER * atr)
 
-            # Structure breaks
+            # Structure breaks (CALL: price < prior low)
             broken10_close = bool(close_price < low10)
             broken5_close = bool(close_price < low5)
             broken10_current = bool(current_price < low10)
             broken5_current = bool(current_price < low5)
 
-            # ATR hits
+            # ATR hits (CALL: price <= stop)
             atr_hit_close = bool(close_price <= atr_stop)
             atr_hit_current = bool(current_price <= atr_stop)
         else:
             atr_stop = float(entry_underlying + ATR_MULTIPLIER * atr)
 
-            # Structure breaks
+            # Structure breaks (PUT: price > prior high)
             broken10_close = bool(close_price > high10)
             broken5_close = bool(close_price > high5)
             broken10_current = bool(current_price > high10)
             broken5_current = bool(current_price > high5)
 
-            # ATR hits
+            # ATR hits (PUT: price >= stop)
             atr_hit_close = bool(close_price >= atr_stop)
             atr_hit_current = bool(current_price >= atr_stop)
 
@@ -295,6 +339,10 @@ def main():
         action10_current, trend10_current = action_and_trend(broken10_current, atr_hit_current)
         action5_current, trend5_current = action_and_trend(broken5_current, atr_hit_current)
 
+        # ATR advice (close & current)
+        atr_advice_close, atr_dist_close, atr_dist_close_atr = atr_advice(is_call, close_price, atr_stop, atr)
+        atr_advice_current, atr_dist_cur, atr_dist_cur_atr = atr_advice(is_call, current_price, atr_stop, atr)
+
         if (
             action10_close == "SELL"
             or action5_close == "SELL"
@@ -302,9 +350,6 @@ def main():
             or action5_current == "SELL"
         ):
             any_sell = True
-
-        atr_note_close = " (ATR STOP HIT)" if atr_hit_close else ""
-        atr_note_current = " (ATR STOP HIT)" if atr_hit_current else ""
 
         report.append(
             f"""Ticker: {ticker} ({direction})
@@ -317,9 +362,15 @@ Prior 10d Low/High: {low10:.2f} / {high10:.2f}
 Prior 5d  Low/High: {low5:.2f} / {high5:.2f}
 
 Prices:
-Close price used:   {close_price:.2f}{atr_note_close}
-Current price used: {current_price:.2f}{atr_note_current}
+Close price used:   {close_price:.2f}
+Current price used: {current_price:.2f}
 Current source:     {current_src}
+
+ATR advice (based on CLOSE):   {atr_advice_close}
+ATR distance (CLOSE):         {atr_dist_close:+.2f} USD  ({atr_dist_close_atr:+.2f} ATR)
+
+ATR advice (based on CURRENT): {atr_advice_current}
+ATR distance (CURRENT):        {atr_dist_cur:+.2f} USD  ({atr_dist_cur_atr:+.2f} ATR)
 
 === Based on CLOSE price ===
 10 Days action : {action10_close}
