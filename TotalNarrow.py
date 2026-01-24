@@ -43,7 +43,7 @@ OPT_TP_PCT_DEFAULT      = 1.00     # +100% target
 OPT_ITM_DELTA_CALL      = 0.60
 OPT_ITM_DELTA_PUT       = -0.60
 
-TOP_N_BY_DEFAULT        = 300
+TOP_N_BY_DEFAULT        = 3000
 
 FALLBACK_UNIVERSE = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","JPM","V","UNH",
