@@ -12,6 +12,7 @@ permissions:
 jobs:
   run-portfolio-manager:
     runs-on: ubuntu-latest
+    environment: GMAIL 
 
     steps:
       - name: Checkout repo
