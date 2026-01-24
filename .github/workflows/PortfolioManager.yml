@@ -3,7 +3,7 @@ name: Nightly Portfolio Manager
 on:
   schedule:
     # Runs nightly at 01:10 AM America/Toronto ≈ 06:10 UTC (adjust if you want a different time)
-    - cron: "10 6 * * *"
+    - cron: "0 1 * * 1-5"   
   workflow_dispatch: {}
 
 permissions:
