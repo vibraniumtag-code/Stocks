@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """
-portfolio_manager.py  (UPDATED: HTML email tables + plain-text fallback)
+portfolio_manager.py  (FULL SCRIPT — HTML email tables + plain-text fallback)
 
-- Sends a REAL HTML table in email (nice table view in Gmail/Outlook)
-- Also includes a plain-text fallback version for clients that block HTML
-- Keeps your current positions.csv format (no changes required)
-- Scanner import name: TotalNarrow.py
-- Robust to empty env vars (no float('') / int('') crashes)
-- Fixes pandas strict string dtype issues
-- Still saves portfolio_plan.csv
+Fixes & features included:
+- ✅ HTML email tables (nice table view) + plain text fallback
+- ✅ Works on newer pandas where DataFrame.applymap() is removed
+- ✅ Keeps your current positions.csv format (no changes required)
+- ✅ Scanner import name: TotalNarrow.py
+- ✅ Robust env parsing (no int('') / float('') crashes)
+- ✅ Avoids pandas strict string dtype issues by using object dtype for mixed cols
+- ✅ Saves portfolio_plan.csv in repo workspace
 
 Required positions.csv columns:
   ticker, option_name, option_entry_price, underlying_entry_price
 Optional:
-  contracts (defaults to 1), entry_date (ignored)
+  contracts (defaults to 1)
 
 Email env vars (GitHub secrets):
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
+Optional:
+  EMAIL_MODE = always | action_only
 """
 
 import os
@@ -168,7 +171,7 @@ def send_email(subject: str, text_body: str, html_body: str) -> None:
 
 
 # =========================
-# HTML TABLE BUILDER
+# HTML TABLE BUILDER (pandas-safe, no applymap)
 # =========================
 def html_escape(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -178,8 +181,9 @@ def df_to_html_table(df: pd.DataFrame, title: str) -> str:
         return f"<h3 style='margin:16px 0 6px;'>{html_escape(title)}</h3><div>No rows.</div>"
 
     safe = df.copy().fillna("")
-    # Escape all cells to avoid HTML issues
-    safe = safe.astype(str).applymap(html_escape)
+    safe = safe.astype(str)
+    # pandas-3-safe: apply + map instead of applymap
+    safe = safe.apply(lambda col: col.map(html_escape))
 
     ths = "".join(
         f"<th style='border:1px solid #ddd; padding:8px; text-align:left; background:#f5f5f5;'>{html_escape(c)}</th>"
@@ -189,7 +193,7 @@ def df_to_html_table(df: pd.DataFrame, title: str) -> str:
     trs = []
     for i in range(len(safe)):
         tds = "".join(
-            f"<td style='border:1px solid #ddd; padding:8px; vertical-align:top;'>{safe.iloc[i, j]}</td>"
+            f"<td style='border:1px solid #ddd; padding:8px; vertical-align:top;'>{safe.iat[i, j]}</td>"
             for j in range(safe.shape[1])
         )
         bg = "#ffffff" if (i % 2 == 0) else "#fafafa"
@@ -237,6 +241,7 @@ def calculate_atr(df: pd.DataFrame, period: int) -> pd.Series:
     return tr.rolling(period).mean()
 
 def prior_window(df_completed: pd.DataFrame, n: int) -> pd.DataFrame:
+    # prior N completed bars, excluding the most recent completed bar
     return df_completed.iloc[-(n + 1):-1]
 
 def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
@@ -373,11 +378,13 @@ def run_entry_scan() -> pd.DataFrame:
         import TotalNarrow as scan
     except Exception:
         return pd.DataFrame()
+
     if hasattr(scan, "generate_new_entries"):
         try:
             return scan.generate_new_entries()
         except Exception:
             return pd.DataFrame()
+
     return pd.DataFrame()
 
 
@@ -437,6 +444,7 @@ def main():
     report_lines: List[str] = []
     any_action = False
 
+    # Mixed dtypes must be object to avoid pandas strict dtype issues
     enriched = positions.copy()
     enriched["option_mark"] = np.nan
     enriched["pos_value"] = 0.0
@@ -703,19 +711,18 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
     # ---- Plain text body (fallback)
     header_txt = []
     header_txt.append(f"PORTFOLIO MANAGER — {datetime.now().strftime('%Y-%m-%d')}")
-    header_txt.append(f"Total value: {money2(total_value)} | Usable: {money2(usable_value)} | Slot: {money2(slot_budget)} | Freed: {money2(freed_cash)}")
-    header_txt.append(f"Remaining slots: {remaining_slots}")
+    header_txt.append(f"Total: {money2(total_value)} | Usable: {money2(usable_value)} | Slot: {money2(slot_budget)} | Freed: {money2(freed_cash)} | Slots: {remaining_slots}")
+    header_txt.append(f"Scanner: TotalNarrow.py")
     header_txt.append(f"Plan saved: {PLAN_FILE}")
     header_txt.append("")
     body_details = "\n-------------------------\n".join(report_lines) if report_lines else "No details."
     text_body = "\n".join(header_txt) + "\nDETAILS\n=======\n" + body_details
 
-    # ---- HTML body
+    # ---- HTML body tables
     existing_df = plan_df[plan_df["Type"].isin(["SELL", "HOLD"])][
         ["Type", "Ticker", "Option", "ContractsHeld", "SellContracts", "Recommendation", "PositionValue", "OptionMark", "Reason"]
     ].copy()
 
-    # pretty formatting for HTML cells
     if not existing_df.empty:
         existing_df["PositionValue"] = existing_df["PositionValue"].apply(money0)
         existing_df["OptionMark"] = existing_df["OptionMark"].apply(lambda x: "" if x == "" else num(x, 2))
