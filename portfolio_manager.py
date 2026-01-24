@@ -2,28 +2,34 @@
 """
 portfolio_manager.py
 
-Keeps your current positions.csv format.
-Reads existing positions and optimizes portfolio:
+Nightly Portfolio Manager (ONE script):
+- Reads existing holdings from positions.csv (keeps your current CSV format)
+- Values each option position using option_name parsing + yfinance option_chain
+- Runs exit logic on underlying:
+    * 10d & 5d structure checks (CLOSE and CURRENT)
+    * ATR advice + ATR stop (from underlying entry)
+- Runs entry scan for tomorrow by importing your existing scanner script: TotalNarrow.py
+- Optimizes / redistributes:
+    * Can sell some/all existing positions (SELL_1/SELL_2/.../SELL_ALL)
+    * Can add new positions from tomorrow entries using cash freed from sells
+    * Sizing considers overall portfolio value derived from positions.csv
 
-- Values existing option positions using option_name parsing + yfinance option_chain
-- Runs exit checks on underlying (structure 10/5 on CLOSE and CURRENT + ATR advice)
-- Imports and runs your entry scanner (unified_turtle_entries_only.py) to get tomorrow entries
-- Builds a plan:
-    * SELL some/all existing positions if structure broken OR oversized vs slot budget
-    * BUY new entries if there is capacity + cash budget
-- Outputs:
-    * portfolio_plan.csv
-    * email summary
+Keeps your CURRENT positions.csv format:
+Required columns:
+  ticker, option_name, option_entry_price, underlying_entry_price
+Optional columns:
+  contracts (defaults to 1), entry_date (ignored)
 
-Positions CSV: your existing format, plus optional contracts column.
-Required columns (must already exist in your file):
-ticker, option_name, option_entry_price, underlying_entry_price
-Optional:
-contracts (defaults to 1 if missing), entry_date (ignored)
+Expected option_name format (case-insensitive, spaces ok):
+  "NFLX 2026-02-20 P 88"
+  "AAPL 2026-03-20 C 200"
 
-Example option_name format expected:
-"NFLX 2026-02-20 P 88"
-"AAPL 2026-03-20 C 200"
+Email env vars (GitHub Secrets):
+  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
+
+Notes:
+- If SMTP secrets are missing/unavailable, script prints report to stdout.
+- If GitHub variables (vars.*) resolve to empty strings, script will safely use defaults.
 """
 
 import os
@@ -32,7 +38,7 @@ import ssl
 import smtplib
 from datetime import datetime, date
 from email.mime.text import MIMEText
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 import numpy as np
 import pandas as pd
@@ -40,45 +46,87 @@ import yfinance as yf
 
 
 # =========================
-# ENV CONFIG
+# SAFE ENV PARSERS (fixes float('') / int('') errors)
 # =========================
-CSV_FILE = os.getenv("CSV_FILE", "positions.csv").strip()
-PLAN_FILE = os.getenv("PLAN_FILE", "portfolio_plan.csv").strip()
+def env_str(name: str, default: str = "") -> str:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    v = str(v).strip()
+    return default if v == "" else v
 
-# Portfolio controls
-MAX_POSITIONS = int(float(os.getenv("MAX_POSITIONS", "4")))
-CASH_BUFFER_PCT = float(os.getenv("CASH_BUFFER_PCT", "0.05"))  # keep 5% as cash buffer target
-MAX_NEW_PER_RUN = int(float(os.getenv("MAX_NEW_PER_RUN", "2"))) # don't add too many at once
-MAX_CONTRACTS_PER_POSITION = int(float(os.getenv("MAX_CONTRACTS_PER_POSITION", "6")))
-CONTRACT_MULTIPLIER = int(float(os.getenv("CONTRACT_MULTIPLIER", "100")))
+def env_float(name: str, default: float) -> float:
+    v = env_str(name, "")
+    if v == "":
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        return default
 
-# Exit logic
-ATR_PERIOD = int(float(os.getenv("ATR_PERIOD", "14")))
-ATR_MULTIPLIER = float(os.getenv("ATR_MULTIPLIER", "1.5"))
-STRUCTURE_10 = int(float(os.getenv("STRUCTURE_10", "10")))
-STRUCTURE_5 = int(float(os.getenv("STRUCTURE_5", "5")))
+def env_int(name: str, default: int) -> int:
+    v = env_str(name, "")
+    if v == "":
+        return default
+    try:
+        return int(float(v))
+    except ValueError:
+        return default
 
-ATR_VERY_CLOSE = float(os.getenv("ATR_VERY_CLOSE", "0.25"))
-ATR_CLOSE = float(os.getenv("ATR_CLOSE", "0.50"))
+def to_float(x) -> Optional[float]:
+    try:
+        v = float(x)
+        if pd.isna(v):
+            return None
+        return v
+    except Exception:
+        return None
 
-RECO_MODE = os.getenv("RECO_MODE", "current").strip().lower()  # current | close
-
-# Oversize redistribution rule
-OVERSIZE_MULT = float(os.getenv("OVERSIZE_MULT", "1.40"))  # if position value > slot_budget*1.40, trim
-TRIM_TO_SLOT = os.getenv("TRIM_TO_SLOT", "true").strip().lower() == "true"
-
-# Email
-SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
-SMTP_PORT_RAW = (os.getenv("SMTP_PORT") or "").strip()
-SMTP_PORT = int(SMTP_PORT_RAW) if SMTP_PORT_RAW.isdigit() else 0
-SMTP_USER = os.getenv("SMTP_USER", "").strip()
-SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
-EMAIL_TO = os.getenv("EMAIL_TO", "").strip()
-EMAIL_MODE = os.getenv("EMAIL_MODE", "always").strip().lower()  # always | action_only
+def to_int(x, default=1) -> int:
+    try:
+        return max(int(float(x)), 0)
+    except Exception:
+        return default
 
 
 # =========================
-# EMAIL HELPERS
+# CONFIG (all safe to blanks)
+# =========================
+CSV_FILE = env_str("CSV_FILE", "positions.csv")
+PLAN_FILE = env_str("PLAN_FILE", "portfolio_plan.csv")
+
+# Portfolio constraints
+MAX_POSITIONS = env_int("MAX_POSITIONS", 4)
+CASH_BUFFER_PCT = env_float("CASH_BUFFER_PCT", 0.05)  # keep 5% unallocated
+MAX_NEW_PER_RUN = env_int("MAX_NEW_PER_RUN", 2)
+MAX_CONTRACTS_PER_POSITION = env_int("MAX_CONTRACTS_PER_POSITION", 6)
+CONTRACT_MULTIPLIER = env_int("CONTRACT_MULTIPLIER", 100)
+
+# Exit / structure config
+ATR_PERIOD = env_int("ATR_PERIOD", 14)
+ATR_MULTIPLIER = env_float("ATR_MULTIPLIER", 1.5)
+STRUCTURE_10 = env_int("STRUCTURE_10", 10)
+STRUCTURE_5 = env_int("STRUCTURE_5", 5)
+RECO_MODE = env_str("RECO_MODE", "current").lower()  # current | close
+
+ATR_VERY_CLOSE = env_float("ATR_VERY_CLOSE", 0.25)
+ATR_CLOSE = env_float("ATR_CLOSE", 0.50)
+
+# Oversize redistribution
+OVERSIZE_MULT = env_float("OVERSIZE_MULT", 1.40)      # if position value > slot_budget*OVERSIZE_MULT => trim
+TRIM_TO_SLOT = env_str("TRIM_TO_SLOT", "true").lower() == "true"
+
+# Email env vars (fixes your “email env” issue: uses only these names)
+SMTP_HOST = env_str("SMTP_HOST", "")
+SMTP_PORT = env_int("SMTP_PORT", 0)
+SMTP_USER = env_str("SMTP_USER", "")
+SMTP_PASS = env_str("SMTP_PASS", "")
+EMAIL_TO = env_str("EMAIL_TO", "")
+EMAIL_MODE = env_str("EMAIL_MODE", "always").lower()  # always | action_only
+
+
+# =========================
+# EMAIL
 # =========================
 def smtp_ready() -> bool:
     return all([SMTP_HOST, SMTP_PORT > 0, SMTP_USER, SMTP_PASS, EMAIL_TO])
@@ -104,23 +152,8 @@ def send_email(subject: str, body: str) -> None:
 
 
 # =========================
-# DATA HELPERS
+# MARKET DATA HELPERS
 # =========================
-def to_float(x) -> Optional[float]:
-    try:
-        v = float(x)
-        if pd.isna(v):
-            return None
-        return v
-    except Exception:
-        return None
-
-def to_int(x, default=1) -> int:
-    try:
-        return max(int(float(x)), 0)
-    except Exception:
-        return default
-
 def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -149,6 +182,7 @@ def calculate_atr(df: pd.DataFrame, period: int) -> pd.Series:
     return tr.rolling(period).mean()
 
 def prior_window(df_completed: pd.DataFrame, n: int) -> pd.DataFrame:
+    # Prior N completed bars, excluding most recent completed bar
     return df_completed.iloc[-(n + 1):-1]
 
 def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
@@ -207,28 +241,28 @@ def action_and_trend(structure_broken: bool) -> Tuple[str, str]:
 # =========================
 # OPTION PRICING FROM option_name
 # =========================
-_OPT_RE = re.compile(r"^\s*([A-Z]{1,6})\s+(\d{4}-\d{2}-\d{2})\s+([CP])\s+(\d+(\.\d+)?)\s*$")
+_OPT_RE = re.compile(r"^\s*([A-Z]{1,6})\s+(\d{4}-\d{2}-\d{2})\s+([CP])\s+(\d+(\.\d+)?)\s*$", re.IGNORECASE)
 
 def parse_option_name(option_name: str) -> Optional[Tuple[str, str, str, float]]:
     """
-    Returns (ticker, expiry, type, strike)
-    option_name example: "NFLX 2026-02-20 P 88"
+    Returns (ticker, expiry, opt_type, strike)
+    opt_type: CALL or PUT
     """
-    m = _OPT_RE.match((option_name or "").strip().upper())
+    m = _OPT_RE.match((option_name or "").strip())
     if not m:
         return None
-    ticker = m.group(1)
+    ticker = m.group(1).upper()
     expiry = m.group(2)
-    opt_type = "CALL" if m.group(3) == "C" else "PUT"
+    cp = m.group(3).upper()
+    opt_type = "CALL" if cp == "C" else "PUT"
     strike = float(m.group(4))
     return ticker, expiry, opt_type, strike
 
 def fetch_option_quote_from_name(option_name: str) -> Dict[str, Any]:
     """
     Best effort:
-      - match strike row in option_chain
-      - use mid = (bid+ask)/2 if available and >0
-      - else use lastPrice if >0
+      - match expiry + strike in chain
+      - price = mid(bid,ask) if bid/ask available, else lastPrice
     """
     parsed = parse_option_name(option_name)
     if not parsed:
@@ -242,12 +276,9 @@ def fetch_option_quote_from_name(option_name: str) -> Dict[str, Any]:
         if tab is None or tab.empty:
             return {"ok": False, "reason": "empty_chain"}
 
-        # find closest strike (in case of float formatting)
         tab2 = tab.copy()
         tab2["strike_diff"] = (tab2["strike"] - strike).abs()
         row = tab2.nsmallest(1, "strike_diff").iloc[0].to_dict()
-        if float(row.get("strike", strike)) != float(row.get("strike", strike)):
-            pass
 
         bid = row.get("bid", None)
         ask = row.get("ask", None)
@@ -294,41 +325,51 @@ def fetch_option_quote_from_name(option_name: str) -> Dict[str, Any]:
 
 
 # =========================
-# ENTRY SCAN (IMPORT YOUR EXISTING SCRIPT)
+# ENTRY SCAN IMPORT (scanner name fix)
 # =========================
 def run_entry_scan() -> pd.DataFrame:
     """
-    Uses your existing scanner file without modifying it.
-    It must be in the repo root and named unified_turtle_entries_only.py
-    and must expose generate_new_entries(...) or main pipeline is similar.
+    Imports your scanner that currently emails, called "TotalNarrow".
+    Expecting a function generate_new_entries(...) returning a DataFrame,
+    OR a function main-like output is not used here.
+
+    File must be TotalNarrow.py in repo root.
     """
     try:
-        import TotalNarrow as scan
+        import TotalNarrow as scan  # <-- scanner name fixed here
     except Exception:
         return pd.DataFrame()
 
-    # Use its generate_new_entries directly if present
     if hasattr(scan, "generate_new_entries"):
-        return scan.generate_new_entries(
-            top=int(os.getenv("TOP_N_BY_DEFAULT", "300")),
-            system=int(os.getenv("SYSTEM_DEFAULT", "1")),
-            atr_period=int(os.getenv("ATR_PERIOD_DEFAULT", "20")),
-            k_stop_atr=float(os.getenv("K_STOP_ATR_DEFAULT", "2.0")),
-            k_take_atr=float(os.getenv("K_TAKE_ATR_DEFAULT", "3.0")),
-            allow_shorts=bool(int(os.getenv("ALLOW_SHORTS_DEFAULT", "1"))),
-            opt_min_dte=int(os.getenv("OPT_MIN_DTE_DEFAULT", "30")),
-            opt_max_dte=int(os.getenv("OPT_MAX_DTE_DEFAULT", "60")),
-            opt_target_dte=int(os.getenv("OPT_TARGET_DTE_DEFAULT", "45")),
-            opt_sl=float(os.getenv("OPT_SL_PCT_DEFAULT", "0.50")),
-            opt_tp=float(os.getenv("OPT_TP_PCT_DEFAULT", "1.00")),
-        )
+        try:
+            # Call with no args if your scanner supports defaults
+            return scan.generate_new_entries(
+                top=getattr(scan, "TOP_N_BY_DEFAULT", 300),
+                system=getattr(scan, "SYSTEM_DEFAULT", 1),
+                atr_period=getattr(scan, "ATR_PERIOD_DEFAULT", 20),
+                k_stop_atr=getattr(scan, "K_STOP_ATR_DEFAULT", 2.0),
+                k_take_atr=getattr(scan, "K_TAKE_ATR_DEFAULT", 3.0),
+                allow_shorts=bool(int(getattr(scan, "ALLOW_SHORTS_DEFAULT", True))),
+                opt_min_dte=getattr(scan, "OPT_MIN_DTE_DEFAULT", 30),
+                opt_max_dte=getattr(scan, "OPT_MAX_DTE_DEFAULT", 60),
+                opt_target_dte=getattr(scan, "OPT_TARGET_DTE_DEFAULT", 45),
+                opt_sl=getattr(scan, "OPT_SL_PCT_DEFAULT", 0.50),
+                opt_tp=getattr(scan, "OPT_TP_PCT_DEFAULT", 1.00),
+            )
+        except TypeError:
+            # If signature differs, try calling without kwargs
+            try:
+                return scan.generate_new_entries()
+            except Exception:
+                return pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
 
-    # If not available, return empty (no new entries)
     return pd.DataFrame()
 
 
 # =========================
-# CORE: EXIT + VALUE + OPTIMIZE
+# OPTIMIZATION LOGIC
 # =========================
 def decide_sell_count(contracts: int, broken10: bool, broken5: bool) -> int:
     """
@@ -361,79 +402,109 @@ def option_position_value(option_price: Optional[float], contracts: int) -> floa
         return 0.0
     return float(option_price) * CONTRACT_MULTIPLIER * contracts
 
+def estimate_cost_from_entry_row(r: pd.Series) -> float:
+    """
+    Entry row should have OptionLast.
+    Returns per-contract cost in dollars.
+    """
+    try:
+        p = float(r.get("OptionLast", ""))
+        if not np.isfinite(p) or p <= 0:
+            return float("inf")
+        return p * CONTRACT_MULTIPLIER
+    except Exception:
+        return float("inf")
+
+
+# =========================
+# MAIN
+# =========================
 def main():
     if not os.path.exists(CSV_FILE):
         raise FileNotFoundError(f"{CSV_FILE} not found")
 
     positions = pd.read_csv(CSV_FILE)
 
-    # Keep CSV format: contracts optional
+    # Keep your CSV format: contracts optional
     if "contracts" not in positions.columns:
         positions["contracts"] = 1
 
-    required = {"ticker","option_name","option_entry_price","underlying_entry_price"}
+    required = {"ticker", "option_name", "option_entry_price", "underlying_entry_price"}
     missing = required - set(positions.columns)
     if missing:
         raise ValueError(f"{CSV_FILE} missing required columns: {sorted(missing)}")
 
-    report_lines = []
-    plan_rows = []
+    ticker_cache: Dict[str, pd.DataFrame] = {}
+    report_lines: List[str] = []
+    plan_rows: List[Dict[str, Any]] = []
     any_action = False
 
-    # 1) Value existing positions and compute signals
-    enriched = positions.copy()
-
-    # Fetch underlying history once per ticker
-    ticker_cache = {}
-
     total_value = 0.0
+
+    enriched = positions.copy()
+    enriched["option_mark"] = ""
+    enriched["option_src"] = ""
+    enriched["pos_value"] = 0.0
+    enriched["sell_count_exit"] = 0
+    enriched["sell_count_opt"] = 0
+    enriched["sell_count_final"] = 0
+    enriched["recommendation_final"] = "HOLD"
+
+    min_needed = max(ATR_PERIOD, STRUCTURE_10) + 10
+
+    # -------- 1) Value + exit signals for existing positions --------
     for i, row in positions.iterrows():
         ticker = str(row["ticker"]).strip().upper()
         option_name = str(row["option_name"]).strip()
         entry_under = to_float(row["underlying_entry_price"])
         contracts = to_int(row.get("contracts", 1), 1)
 
-        # Option mark price from option_name (best effort)
+        # Option mark from option_name
         oq = fetch_option_quote_from_name(option_name)
         option_mark = None
         option_src = ""
         if oq.get("ok"):
             option_mark = float(oq["price"])
-            option_src = str(oq.get("source",""))
+            option_src = str(oq.get("source", ""))
         else:
-            # fallback to entry price if we can't quote (so we still have a value baseline)
+            # fallback to entry price if can't quote
             option_mark = to_float(row.get("option_entry_price"))
             option_src = f"fallback_entry_price({oq.get('reason')})"
 
         pos_value = option_position_value(option_mark, contracts)
         total_value += pos_value
 
-        # Underlying data
+        enriched.at[i, "option_mark"] = option_mark if option_mark is not None else ""
+        enriched.at[i, "option_src"] = option_src
+        enriched.at[i, "pos_value"] = pos_value
+
+        if contracts <= 0 or entry_under is None:
+            enriched.at[i, "recommendation_final"] = "NO_POSITION"
+            continue
+
+        # Underlying history
         if ticker not in ticker_cache:
             df = yf.download(ticker, period="9mo", interval="1d", progress=False)
             df = flatten_columns(df).dropna() if df is not None else pd.DataFrame()
             ticker_cache[ticker] = df
 
         df = ticker_cache[ticker]
-        if df.empty or entry_under is None:
-            enriched.at[i, "recommendation"] = "SKIP"
-            enriched.at[i, "pos_value"] = pos_value
+        if df.empty:
+            enriched.at[i, "recommendation_final"] = "NO_DATA"
             continue
 
         close_price = float(df["Close"].iloc[-1])
         current_price, current_src = get_current_price(ticker, fallback=close_price)
 
         df_completed = remove_today_partial_bar(df).dropna()
-        if len(df_completed) < max(ATR_PERIOD, STRUCTURE_10) + 10:
-            enriched.at[i, "recommendation"] = "NO_HISTORY"
-            enriched.at[i, "pos_value"] = pos_value
+        if len(df_completed) < min_needed:
+            enriched.at[i, "recommendation_final"] = "NO_HISTORY"
             continue
 
         atr_series = calculate_atr(df_completed, ATR_PERIOD)
         atr_last = atr_series.iloc[-1]
         if pd.isna(atr_last):
-            enriched.at[i, "recommendation"] = "NO_ATR"
-            enriched.at[i, "pos_value"] = pos_value
+            enriched.at[i, "recommendation_final"] = "NO_ATR"
             continue
         atr = float(atr_last)
 
@@ -442,21 +513,15 @@ def main():
         low10, high10 = float(w10["Low"].min()), float(w10["High"].max())
         low5, high5 = float(w5["Low"].min()), float(w5["High"].max())
 
-        # Determine CALL/PUT from option_name parsing
         parsed = parse_option_name(option_name)
-        is_call = None
-        direction = "UNKNOWN"
-        if parsed:
-            _, _, opt_type, _ = parsed
-            is_call = (opt_type == "CALL")
-            direction = opt_type
-
-        if is_call is None:
-            enriched.at[i, "recommendation"] = "SKIP_BAD_OPTION_NAME"
-            enriched.at[i, "pos_value"] = pos_value
+        if not parsed:
+            enriched.at[i, "recommendation_final"] = "BAD_OPTION_NAME"
             continue
+        _, _, opt_type, _ = parsed
+        is_call = (opt_type == "CALL")
+        direction = opt_type
 
-        # ATR stop (on underlying entry)
+        # ATR stop + structure breaks
         if is_call:
             atr_stop = float(entry_under - ATR_MULTIPLIER * atr)
             broken10_close = bool(close_price < low10)
@@ -470,7 +535,6 @@ def main():
             broken10_cur = bool(current_price > high10)
             broken5_cur = bool(current_price > high5)
 
-        # Action/trend sections (as you wanted)
         action10_close, trend10_close = action_and_trend(broken10_close)
         action5_close, trend5_close = action_and_trend(broken5_close)
         action10_cur, trend10_cur = action_and_trend(broken10_cur)
@@ -479,31 +543,17 @@ def main():
         adv_c, dist_c, dist_c_atr, _ = atr_advice(is_call, close_price, atr_stop, atr)
         adv_u, dist_u, dist_u_atr, _ = atr_advice(is_call, current_price, atr_stop, atr)
 
-        # Exit recommendation (SELL_n) based on RECO_MODE
+        # Exit recommendation based on chosen mode
         if RECO_MODE == "close":
-            sell_count = decide_sell_count(contracts, broken10_close, broken5_close)
+            sell_exit = decide_sell_count(contracts, broken10_close, broken5_close)
             reco_basis = "CLOSE"
         else:
-            sell_count = decide_sell_count(contracts, broken10_cur, broken5_cur)
+            sell_exit = decide_sell_count(contracts, broken10_cur, broken5_cur)
             reco_basis = "CURRENT"
-        reco_exit = label_sell(sell_count, contracts)
 
-        enriched.at[i, "option_mark"] = option_mark
-        enriched.at[i, "option_src"] = option_src
-        enriched.at[i, "pos_value"] = pos_value
-        enriched.at[i, "close_price"] = close_price
-        enriched.at[i, "current_price"] = current_price
-        enriched.at[i, "current_src"] = current_src
-        enriched.at[i, "atr"] = atr
-        enriched.at[i, "atr_stop"] = atr_stop
-        enriched.at[i, "trend10_close"] = trend10_close
-        enriched.at[i, "trend5_close"] = trend5_close
-        enriched.at[i, "trend10_current"] = trend10_cur
-        enriched.at[i, "trend5_current"] = trend5_cur
-        enriched.at[i, "sell_count_exit"] = sell_count
-        enriched.at[i, "recommendation_exit"] = reco_exit
+        enriched.at[i, "sell_count_exit"] = sell_exit
 
-        if reco_exit != "HOLD":
+        if sell_exit > 0:
             any_action = True
 
         report_lines.append(
@@ -536,24 +586,19 @@ CURRENT: {adv_u} dist {dist_u:+.2f} ({dist_u_atr:+.2f} ATR)
 5 Days action  : {action5_cur}
 5 Days trend   : {trend5_cur}
 
-EXIT RECOMMENDATION ({reco_basis}): {reco_exit}
+EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
 """
         )
 
-    # 2) Compute slot budget from CSV-derived total value
-    # We assume portfolio value is sum of option positions; cash is unknown -> we model as 0 cash at start.
+    # -------- 2) Slot budget from portfolio value (derived from CSV) --------
     usable_value = total_value * (1.0 - CASH_BUFFER_PCT)
-    slot_budget = usable_value / max(MAX_POSITIONS, 1) if total_value > 0 else 0.0
+    slot_budget = (usable_value / max(MAX_POSITIONS, 1)) if total_value > 0 else 0.0
 
-    # 3) Oversize trimming (redistribution) on top of exit-based sells
-    #    This is what lets it "optimize" even when trends intact.
-    enriched["sell_count_opt"] = 0
-    enriched["recommendation_opt"] = "HOLD"
-
+    # -------- 3) Oversize trimming (redistribution) --------
     if TRIM_TO_SLOT and slot_budget > 0:
         for i, row in enriched.iterrows():
             contracts = to_int(row.get("contracts", 1), 1)
-            if contracts <= 0:
+            if contracts <= 1:  # can't trim 1-contract positions
                 continue
 
             pos_value = float(row.get("pos_value", 0.0) or 0.0)
@@ -561,112 +606,79 @@ EXIT RECOMMENDATION ({reco_basis}): {reco_exit}
             if option_mark is None or option_mark <= 0:
                 continue
 
-            # Only trim if NOT already being exited fully by structure
             exit_sell = to_int(row.get("sell_count_exit", 0), 0)
             if exit_sell >= contracts:
-                continue
+                continue  # already exiting fully
 
             if pos_value > slot_budget * OVERSIZE_MULT:
-                # target contracts to get pos_value close to slot_budget
-                est_cost_per_contract = option_mark * CONTRACT_MULTIPLIER
-                target_contracts = int(max(1, min(MAX_CONTRACTS_PER_POSITION, slot_budget // est_cost_per_contract)))
-                target_contracts = max(0, target_contracts)
-
+                cost1 = option_mark * CONTRACT_MULTIPLIER
+                if cost1 <= 0:
+                    continue
+                target_contracts = int(max(1, min(MAX_CONTRACTS_PER_POSITION, slot_budget // cost1)))
                 sell_needed = max(0, contracts - target_contracts)
-                # If 1 contract only, cannot trim -> either keep or sell all (we keep by default)
-                if contracts == 1:
-                    sell_needed = 0
-
                 if sell_needed > 0:
                     enriched.at[i, "sell_count_opt"] = sell_needed
-                    enriched.at[i, "recommendation_opt"] = f"SELL_{sell_needed}"
                     any_action = True
 
-    # 4) Merge sell decisions: take max per row (exit sells first), cap to contracts
-    def merged_sell(row) -> int:
-        c = to_int(row.get("contracts", 1), 1)
-        s1 = to_int(row.get("sell_count_exit", 0), 0)
-        s2 = to_int(row.get("sell_count_opt", 0), 0)
-        return min(c, max(s1, s2))
-
-    enriched["sell_count_final"] = enriched.apply(merged_sell, axis=1)
-
-    def label_final(row) -> str:
-        c = to_int(row.get("contracts", 1), 1)
-        s = to_int(row.get("sell_count_final", 0), 0)
-        if c <= 0:
-            return "NO_POSITION"
-        if s <= 0:
-            return "HOLD"
-        if s >= c:
-            return "SELL_ALL"
-        return f"SELL_{s}"
-
-    enriched["recommendation_final"] = enriched.apply(label_final, axis=1)
-
-    # Cash freed by sells (approx at option mark)
+    # -------- 4) Merge sells (take max of exit vs trim), compute freed cash --------
     freed_cash = 0.0
-    for _, row in enriched.iterrows():
+    for i, row in enriched.iterrows():
+        contracts = to_int(row.get("contracts", 1), 1)
+        s_exit = to_int(row.get("sell_count_exit", 0), 0)
+        s_opt = to_int(row.get("sell_count_opt", 0), 0)
+        s_final = min(contracts, max(s_exit, s_opt))
+        enriched.at[i, "sell_count_final"] = s_final
+        enriched.at[i, "recommendation_final"] = label_sell(s_final, contracts)
+
         option_mark = to_float(row.get("option_mark", None))
-        s = to_int(row.get("sell_count_final", 0), 0)
-        if option_mark is not None and s > 0:
-            freed_cash += option_mark * CONTRACT_MULTIPLIER * s
+        if option_mark is not None and s_final > 0:
+            freed_cash += option_mark * CONTRACT_MULTIPLIER * s_final
 
-    # 5) Entry scan for tomorrow
-    entries = run_entry_scan()
-    if entries is None:
-        entries = pd.DataFrame()
-
-    # Determine how many positions remain after planned SELL_ALL
-    def will_be_open(row) -> bool:
-        c = to_int(row.get("contracts", 1), 1)
-        s = to_int(row.get("sell_count_final", 0), 0)
+    # Count remaining open positions after SELL_ALL
+    def will_be_open(r: pd.Series) -> bool:
+        c = to_int(r.get("contracts", 1), 1)
+        s = to_int(r.get("sell_count_final", 0), 0)
         return (c - s) > 0
 
     open_positions = enriched[enriched.apply(will_be_open, axis=1)]
     open_tickers = set(open_positions["ticker"].astype(str).str.upper().str.strip().tolist())
-
     remaining_slots = max(MAX_POSITIONS - len(open_positions), 0)
 
-    # 6) Build BUY plan from entries using freed_cash (since we assume no cash otherwise)
-    buy_rows = []
-    if remaining_slots > 0 and not entries.empty and freed_cash > 0:
-        # exclude tickers already held
+    # -------- 5) Run entry scan (TotalNarrow) --------
+    entries = run_entry_scan()
+    if entries is None:
+        entries = pd.DataFrame()
+
+    # -------- 6) Buy plan from freed cash --------
+    buy_rows: List[Dict[str, Any]] = []
+    if remaining_slots > 0 and freed_cash > 0 and entries is not None and not entries.empty:
         cand = entries.copy()
         cand["Ticker"] = cand["Ticker"].astype(str).str.upper().str.strip()
-        cand = cand[~cand["Ticker"].isin(open_tickers)]
+        cand = cand[~cand["Ticker"].isin(open_tickers)].copy()
 
-        # Use OptionLast from scanner as estimate of premium cost
-        def est_cost(row):
-            try:
-                p = float(row.get("OptionLast", ""))
-                return p * CONTRACT_MULTIPLIER if p > 0 else np.inf
-            except Exception:
-                return np.inf
-
-        cand["EstCost1"] = cand.apply(est_cost, axis=1)
+        cand["EstCost1"] = cand.apply(estimate_cost_from_entry_row, axis=1)
+        cand = cand.replace([np.inf, -np.inf], np.nan).dropna(subset=["EstCost1"])
         cand = cand.sort_values(["EstCost1", "Ticker"])
 
-        adds = 0
         cash_left = freed_cash
+        adds = 0
 
         for _, r in cand.iterrows():
             if adds >= min(remaining_slots, MAX_NEW_PER_RUN):
                 break
 
-            ticker = str(r["Ticker"]).upper()
-            est1 = float(r["EstCost1"]) if np.isfinite(float(r["EstCost1"])) else np.inf
-            if not np.isfinite(est1) or est1 <= 0 or est1 == np.inf:
+            est1 = float(r["EstCost1"])
+            if not np.isfinite(est1) or est1 <= 0:
                 continue
 
-            # per-slot budget based on total (optional); but we’ll mainly use cash_left
-            # Buy as many as fit in slot_budget and cash_left, capped
+            # sizing: by slot_budget and cash_left
             max_by_cash = int(cash_left // est1)
             max_by_slot = int(slot_budget // est1) if slot_budget > 0 else max_by_cash
             buy_n = max(0, min(max_by_cash, max_by_slot, MAX_CONTRACTS_PER_POSITION))
             if buy_n <= 0:
                 continue
 
+            ticker = str(r["Ticker"]).upper()
             cash_left -= buy_n * est1
             adds += 1
             open_tickers.add(ticker)
@@ -674,23 +686,21 @@ EXIT RECOMMENDATION ({reco_basis}): {reco_exit}
             buy_rows.append({
                 "Type": "BUY",
                 "Ticker": ticker,
-                "Action": str(r.get("Action","")),
-                "Expiry": str(r.get("Expiry","")),
-                "OptionSymbol": str(r.get("OptionSymbol","")),
-                "OptionLast": str(r.get("OptionLast","")),
+                "Action": str(r.get("Action", "")),
+                "Expiry": str(r.get("Expiry", "")),
+                "OptionSymbol": str(r.get("OptionSymbol", "")),
+                "OptionLast": str(r.get("OptionLast", "")),
                 "BuyContracts": buy_n,
                 "EstCostTotal": round(buy_n * est1, 2),
                 "Reason": "New entry + budget available (from sells)"
             })
 
-    # 7) Build plan rows for existing positions
-    for _, row in enriched.iterrows():
-        ticker = str(row.get("ticker","")).strip().upper()
-        option_name = str(row.get("option_name","")).strip()
-        contracts = to_int(row.get("contracts", 1), 1)
-        sell_n = to_int(row.get("sell_count_final", 0), 0)
-        reco = str(row.get("recommendation_final","HOLD"))
-        pos_value = float(row.get("pos_value", 0.0) or 0.0)
+    # -------- 7) Build plan table --------
+    for _, r in enriched.iterrows():
+        ticker = str(r.get("ticker", "")).strip().upper()
+        option_name = str(r.get("option_name", "")).strip()
+        contracts = to_int(r.get("contracts", 1), 1)
+        sell_n = to_int(r.get("sell_count_final", 0), 0)
 
         if contracts <= 0:
             continue
@@ -701,34 +711,36 @@ EXIT RECOMMENDATION ({reco_basis}): {reco_exit}
             "Option": option_name,
             "ContractsHeld": contracts,
             "SellContracts": sell_n,
-            "Recommendation": reco,
-            "PositionValue": round(pos_value, 2),
-            "OptionMark": row.get("option_mark",""),
+            "Recommendation": str(r.get("recommendation_final", "HOLD")),
+            "PositionValue": round(float(r.get("pos_value", 0.0) or 0.0), 2),
+            "OptionMark": r.get("option_mark", ""),
             "Reason": ("Structure/Trim" if sell_n > 0 else "No action")
         })
 
-    # Add buys to plan
     plan_rows.extend(buy_rows)
-
     plan_df = pd.DataFrame(plan_rows)
     plan_df.to_csv(PLAN_FILE, index=False)
 
-    # 8) Email report
+    # -------- 8) Email / Print report --------
     header = []
     header.append(f"PORTFOLIO MANAGER — {datetime.now().strftime('%Y-%m-%d')}")
-    header.append(f"Total portfolio value (from CSV positions): {total_value:.2f}")
+    header.append(f"Total portfolio value (from positions.csv): {total_value:.2f}")
     header.append(f"Usable (after cash buffer {CASH_BUFFER_PCT:.0%}): {usable_value:.2f}")
     header.append(f"Slot budget (MAX_POSITIONS={MAX_POSITIONS}): {slot_budget:.2f}")
     header.append(f"Freed cash from sells (estimated): {freed_cash:.2f}")
     header.append(f"Remaining slots after SELL_ALL: {remaining_slots}")
+    header.append(f"Scanner: TotalNarrow.py")
     header.append("")
     body = "\n".join(header)
+
     body += "\nEXIT REPORT\n==========\n"
     body += "\n-------------------------\n".join(report_lines) if report_lines else "No valid positions.\n"
-    body += "\n\nPLAN (also saved to portfolio_plan.csv)\n======================================\n"
+
+    body += "\n\nPLAN (saved to portfolio_plan.csv)\n=================================\n"
     body += plan_df.to_string(index=False) if not plan_df.empty else "No actions.\n"
 
-    subject = "🚨 Portfolio Plan – Action Needed" if any_action or (len(buy_rows) > 0) else "✅ Portfolio Plan – No Action"
+    subject = "🚨 Portfolio Plan – Action Needed" if (any_action or len(buy_rows) > 0) else "✅ Portfolio Plan – No Action"
+
     if smtp_ready():
         if EMAIL_MODE == "action_only" and subject.startswith("✅"):
             return
