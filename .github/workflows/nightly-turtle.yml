@@ -69,7 +69,7 @@ jobs:
 
           msg = EmailMessage()
           msg["Subject"] = "Scanner – Tomorrow’s Entries"
-          msg["From"] = f"Scanner <{user}>"
+          msg["From"] = f"<{user}>"
           msg["To"] = to
           msg.set_content(body)
 
