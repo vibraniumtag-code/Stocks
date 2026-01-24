@@ -104,7 +104,7 @@ def smtp_ready() -> bool:
 def send_email(subject: str, body: str) -> None:
     msg = MIMEText(body)
     msg["Subject"] = subject
-    msg["From"] = SMTP_USER
+    msg["From"] = "Scanner"
     msg["To"] = EMAIL_TO
 
     if SMTP_PORT == 465:
