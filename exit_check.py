@@ -104,9 +104,9 @@ def smtp_ready() -> bool:
 def send_email(subject: str, body: str) -> None:
     msg = MIMEText(body)
     msg["Subject"] = subject
-    msg["From"] = "Scanner"
+    
     msg["To"] = EMAIL_TO
-
+    msg["From"] = f"Scanner <{SMTP_USER}>"
     if SMTP_PORT == 465:
         ctx = ssl.create_default_context()
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as server:
