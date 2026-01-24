@@ -1,24 +1,21 @@
 # unified_turtle_entries_only.py
-# Nightly runner: outputs ONLY fresh entries for tomorrow (no ledger) AND prints a ready-to-trade checklist.
+# Nightly runner: outputs ONLY fresh entries for tomorrow (no ledger),
+# prints a ready-to-trade checklist, AND can emit a nice HTML email view.
 #
 # New in this version:
-# - Prints a human-readable checklist to stdout.
-# - Optional: saves a .txt checklist next to the CSV via --emit-checklist 1
-# - NEW FILTERS to narrow Turtle signals:
-#     1) Trend filter using SMA200
-#     2) Liquidity filter using 20D avg dollar volume
-#     3) ATR% sanity filter (avoid too dead / too wild)
-#     4) Breakout strength buffer beyond channel
+# - ✅ HTML email output (scrollable code + checklist + entries table)
+# - ✅ Optional: saves a .html next to the CSV via --emit-html 1
+# - Keeps existing filters + CSV + TXT checklist
 #
 # Usage:
 #   python unified_turtle_entries_only.py --system 1 --allow-shorts 1 --top 300 \
-#     --save entries_tomorrow.csv --emit-checklist 1
+#     --save entries_tomorrow.csv --emit-checklist 1 --emit-html 1
 #
 # -----------------------------------------------------------------------------
 
-import os, re, time, argparse
+import os, re, argparse, html
 from datetime import datetime, date
-from typing import Optional, List, Dict
+from typing import Optional, List
 
 import numpy as np
 import pandas as pd
@@ -57,7 +54,8 @@ def looks_like_ticker(s: str) -> bool:
     return bool(re.match(r"^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$", (s or "").strip().upper()))
 
 def _normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty: return pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [" ".join([str(x) for x in tup]).strip().lower() for tup in df.columns]
     else:
@@ -97,7 +95,8 @@ def find_target_expiration(ticker: str, min_dte: int, max_dte: int, target_dte: 
     try:
         stock = yf.Ticker(ticker)
         exps = stock.options
-        if not exps: return None
+        if not exps:
+            return None
         today = date.today()
         candidates = []
         for exp in exps:
@@ -116,19 +115,24 @@ def select_option(options_df: pd.DataFrame, spot: float, is_call: bool, target_d
     if options_df is None or options_df.empty:
         return None
     df = options_df.copy()
-    # basic liquidity
+
+    # basic liquidity gates (soft)
     if "volume" in df.columns or "openInterest" in df.columns:
-        vol = df.get("volume"); oi = df.get("openInterest")
+        vol = df.get("volume")
+        oi = df.get("openInterest")
         mask = pd.Series(True, index=df.index)
         if vol is not None: mask &= (vol.fillna(0) >= 1)
         if oi is not None:  mask &= (oi.fillna(0) >= 10)
         df = df[mask] if not mask.empty else df
-        if df.empty: df = options_df.copy()
+        if df.empty:
+            df = options_df.copy()
+
     # prefer delta if present
     if "delta" in df.columns and df["delta"].notna().any():
         df["delta_diff"] = (df["delta"] - target_delta).abs()
         return df.nsmallest(1, "delta_diff").iloc[0].to_dict()
-    # fallback: ATM-ish by moneyness
+
+    # fallback: closest to ATM by moneyness
     if is_call:
         df["mny"] = (df["strike"] / spot - 1.0).abs()
     else:
@@ -136,7 +140,6 @@ def select_option(options_df: pd.DataFrame, spot: float, is_call: bool, target_d
     return df.nsmallest(1, "mny").iloc[0].to_dict()
 
 def build_universe(top: int) -> List[str]:
-    # Keep it simple/static for reliability here (no scraping).
     top = max(1, min(top, len(FALLBACK_UNIVERSE)))
     return FALLBACK_UNIVERSE[:top]
 
@@ -156,13 +159,13 @@ def generate_new_entries(top: int,
         raise RuntimeError("yfinance is required. pip install yfinance")
     entry_lb, exit_lb = (20,10) if system==1 else (55,20)
 
-    # ------------------ FILTER CONFIG (NEW) ------------------
+    # ------------------ FILTER CONFIG ------------------
     SMA_TREND_PERIOD = 200
     MIN_DOLLAR_VOL_20D = 20_000_000   # $20M/day avg over last 20 bars
     ATRP_MIN = 0.01                  # 1% ATR of price
     ATRP_MAX = 0.08                  # 8% ATR of price
     BREAKOUT_BUFFER_ATR = 0.10       # 0.10 ATR beyond channel
-    # ---------------------------------------------------------
+    # ---------------------------------------------------
 
     tickers = build_universe(top)
     rows = []
@@ -183,29 +186,26 @@ def generate_new_entries(top: int,
             if not np.isfinite(atrv) or atrv <= 0:
                 continue
 
-            # ----------- Trend filter: SMA200 -----------
+            # Trend filter: SMA200
             sma200 = ohlc["Close"].rolling(SMA_TREND_PERIOD).mean().iloc[-1]
             if not np.isfinite(sma200):
                 continue
 
-            # ----------- Liquidity filter --------------
-            # Approx dollar volume = Close * Volume if available
+            # Liquidity filter (if volume present)
             if "Volume" in df.columns:
                 vol = pd.to_numeric(df["Volume"], errors="coerce")
                 dollar_vol_20d = (vol * ohlc["Close"]).rolling(20).mean().iloc[-1]
                 if not np.isfinite(dollar_vol_20d) or dollar_vol_20d < MIN_DOLLAR_VOL_20D:
                     continue
-            # If no Volume column, skip liquidity filter silently
 
-            # ----------- ATR% sanity filter -------------
+            # ATR% sanity filter
             atrp = atrv / px
             if atrp < ATRP_MIN or atrp > ATRP_MAX:
                 continue
 
-            # ----------- Breakout strength filter -------
+            # Breakout strength buffer
             entry_high = ohlc["High"].rolling(entry_lb).max().shift(1).iloc[-1]
             entry_low  = ohlc["Low"].rolling(entry_lb).min().shift(1).iloc[-1]
-
             strong_long  = px >= (entry_high + BREAKOUT_BUFFER_ATR * atrv)
             strong_short = px <= (entry_low  - BREAKOUT_BUFFER_ATR * atrv)
 
@@ -215,14 +215,13 @@ def generate_new_entries(top: int,
                 stop_under = round(px - k_stop_atr*atrv, 2)
                 target_under = round(px + k_take_atr*atrv, 2)
                 opt_type = "CALL"
-                target_delta = 0.60
-
+                target_delta = OPT_ITM_DELTA_CALL
             elif allow_shorts and short_entry.iloc[-1] and px < sma200 and strong_short:
                 action = "BUY_PUT"
                 stop_under = round(px + k_stop_atr*atrv, 2)
                 target_under = round(px - k_take_atr*atrv, 2)
                 opt_type = "PUT"
-                target_delta = -0.60
+                target_delta = OPT_ITM_DELTA_PUT
             else:
                 continue
 
@@ -235,6 +234,7 @@ def generate_new_entries(top: int,
             opt_tgt  = np.nan
             delta = ""
             iv = ""
+
             if expiry:
                 chain = yf.Ticker(t).option_chain(expiry)
                 tab = chain.calls if opt_type=="CALL" else chain.puts
@@ -246,9 +246,9 @@ def generate_new_entries(top: int,
                         last_prem = float(chosen["lastPrice"])
                         opt_stop = round(last_prem*(1-opt_sl), 2)
                         opt_tgt  = round(last_prem*(1+opt_tp), 2)
-                    if "delta" in chosen and chosen["delta"]==chosen["delta"]:
+                    if "delta" in chosen and chosen["delta"] == chosen["delta"]:
                         delta = float(chosen["delta"])
-                    if "impliedVolatility" in chosen and chosen["impliedVolatility"]==chosen["impliedVolatility"]:
+                    if "impliedVolatility" in chosen and chosen["impliedVolatility"] == chosen["impliedVolatility"]:
                         iv = float(chosen["impliedVolatility"])
 
             rows.append({
@@ -311,8 +311,132 @@ def print_checklist(df: pd.DataFrame, date_str: str) -> str:
     print(text)
     return text
 
+# ---------------------- HTML Email Rendering ----------------------
+def render_html_email(df: pd.DataFrame,
+                      checklist_text: str,
+                      script_text: str,
+                      date_str: str,
+                      args: argparse.Namespace) -> str:
+    # Escape untrusted content
+    safe_checklist = html.escape(checklist_text or "")
+    safe_script = html.escape(script_text or "")
+    safe_date = html.escape(date_str)
+
+    # Build an email-safe table (inline-ish styles, no fancy CSS dependencies)
+    if df is None or df.empty:
+        table_html = """
+          <div style="padding:12px 14px;border:1px solid #e6edf5;border-radius:12px;background:#f7fafc;font-size:13px;">
+            ✅ No new entries for tomorrow.
+          </div>
+        """
+    else:
+        # Keep columns stable and readable
+        cols = [
+            "Ticker","Action","SpotClose","ATR","StopUnderlying","TargetUnderlying",
+            "Expiry","OptionType","OptionStrike","OptionLast","OptionStop","OptionTarget","OptionSymbol","Delta","IV"
+        ]
+        cols = [c for c in cols if c in df.columns]
+        view = df[cols].copy()
+
+        # Convert to HTML (escape is handled by pandas; we still keep it simple)
+        table_html = view.to_html(index=False, escape=True, border=0)
+        # Add light styling using string replace (email-friendly)
+        table_html = table_html.replace(
+            "<table",
+            "<table style='width:100%;border-collapse:collapse;font-size:12px;'"
+        ).replace(
+            "<th>",
+            "<th style='text-align:left;padding:8px;border:1px solid #e7e9f0;background:#f7fafc;'>"
+        ).replace(
+            "<td>",
+            "<td style='padding:8px;border:1px solid #e7e9f0;vertical-align:top;'>"
+        )
+
+    usage = (
+        f"python unified_turtle_entries_only.py --system {args.system} --allow-shorts {int(bool(args.allow_shorts))} "
+        f"--top {args.top} --save {html.escape(args.save)} --emit-checklist {int(args.emit_checklist)} --emit-html {int(args.emit_html)}"
+    )
+
+    html_out = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Turtle Scanner — {safe_date}</title>
+</head>
+<body style="margin:0;padding:0;background:#f6f7fb;">
+  <div style="width:100%;background:#f6f7fb;padding:24px 12px;">
+    <div style="max-width:980px;margin:0 auto;background:#ffffff;border:1px solid #e7e9f0;border-radius:14px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#1f2430;">
+
+      <!-- Header -->
+      <div style="background:#0b1220;color:#ffffff;padding:18px 22px;">
+        <div style="font-size:18px;line-height:1.25;font-weight:800;margin:0;">🐢 Nightly Turtle Entries (Fresh Only)</div>
+        <div style="font-size:12px;opacity:.9;margin-top:6px;">HTML email view — {safe_date}</div>
+      </div>
+
+      <!-- Content -->
+      <div style="padding:18px 22px 8px;">
+        <!-- Badges -->
+        <div style="margin-bottom:10px;">
+          <span style="display:inline-block;font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;margin:0 8px 8px 0;background:#eef2ff;color:#2b3a88;">✅ Fresh entries</span>
+          <span style="display:inline-block;font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;margin:0 8px 8px 0;background:#eef2ff;color:#2b3a88;">📄 Checklist</span>
+          <span style="display:inline-block;font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;margin:0 8px 8px 0;background:#eef2ff;color:#2b3a88;">💾 CSV export</span>
+          <span style="display:inline-block;font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;margin:0 8px 8px 0;background:#eef2ff;color:#2b3a88;">✉️ Email-ready HTML</span>
+        </div>
+
+        <!-- Usage -->
+        <div style="margin:14px 0 18px;">
+          <div style="font-size:14px;font-weight:800;margin:0 0 10px;">▶️ Run Command</div>
+          <div style="background:#f7fafc;border:1px solid #e6edf5;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.45;">
+            <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;background:#eef0f6;padding:2px 6px;border-radius:6px;">{usage}</span>
+          </div>
+        </div>
+
+        <!-- Entries -->
+        <div style="margin:14px 0 18px;">
+          <div style="font-size:14px;font-weight:800;margin:0 0 10px;">📈 New Entries (Tomorrow)</div>
+          {table_html}
+        </div>
+
+        <!-- Checklist -->
+        <div style="margin:14px 0 18px;">
+          <div style="font-size:14px;font-weight:800;margin:0 0 10px;">🧾 Checklist Output</div>
+          <div style="background:#0b1220;color:#e6edf3;border:1px solid #1d2a44;border-radius:12px;overflow:hidden;">
+            <div style="padding:10px 12px;background:#101a2f;color:#cbd5e1;font-size:12px;border-bottom:1px solid #1d2a44;">
+              stdout (copy/paste)
+            </div>
+            <pre style="margin:0;padding:14px;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;">{safe_checklist}</pre>
+          </div>
+        </div>
+
+        <!-- Script -->
+        <div style="margin:14px 0 18px;">
+          <div style="font-size:14px;font-weight:800;margin:0 0 10px;">💻 Script (Reference)</div>
+          <div style="background:#0b1220;color:#e6edf3;border:1px solid #1d2a44;border-radius:12px;overflow:hidden;">
+            <div style="padding:10px 12px;background:#101a2f;color:#cbd5e1;font-size:12px;border-bottom:1px solid #1d2a44;">
+              unified_turtle_entries_only.py
+            </div>
+            <pre style="margin:0;padding:14px;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;">{safe_script}</pre>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Footer -->
+      <div style="padding:14px 22px 18px;font-size:12px;color:#6b7280;background:#fbfbfd;border-top:1px solid #eef0f6;">
+        Generated by unified_turtle_entries_only.py — {safe_date}
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
+"""
+    return html_out
+
+# ---------------------- CLI ----------------------
 def parse_args(argv=None):
-    ap = argparse.ArgumentParser(description="Nightly Turtle new-entry scanner (no ledger) + checklist")
+    ap = argparse.ArgumentParser(description="Nightly Turtle new-entry scanner (no ledger) + checklist + HTML email output")
     ap.add_argument("--system", type=int, default=SYSTEM_DEFAULT, choices=[1,2])
     ap.add_argument("--allow-shorts", type=int, default=int(ALLOW_SHORTS_DEFAULT))
     ap.add_argument("--atr", type=int, default=ATR_PERIOD_DEFAULT)
@@ -326,10 +450,13 @@ def parse_args(argv=None):
     ap.add_argument("--opt-tp", type=float, default=OPT_TP_PCT_DEFAULT)
     ap.add_argument("--save", type=str, default="entries_tomorrow.csv")
     ap.add_argument("--emit-checklist", type=int, default=1, help="1=also write a .txt checklist next to CSV, 0=print only")
+    ap.add_argument("--emit-html", type=int, default=1, help="1=also write a .html email view next to CSV, 0=skip")
+    ap.add_argument("--html-out", type=str, default="", help="Optional custom path for HTML output")
     return ap.parse_args(argv)
 
 def main(argv=None):
     args = parse_args(argv)
+
     df = generate_new_entries(
         top=args.top,
         system=args.system,
@@ -343,6 +470,7 @@ def main(argv=None):
         opt_sl=args.opt_sl,
         opt_tp=args.opt_tp
     )
+
     # Save CSV
     df.to_csv(args.save, index=False)
     print(f"Saved {len(df)} new entries to {args.save}")
@@ -355,9 +483,31 @@ def main(argv=None):
     if int(args.emit_checklist) == 1:
         base, _ = os.path.splitext(args.save)
         txt_path = f"{base}_checklist_{date_str}.txt"
-        with open(txt_path, "w") as f:
+        with open(txt_path, "w", encoding="utf-8") as f:
             f.write(checklist)
         print(f"Checklist saved to: {txt_path}")
+
+    # Optionally save HTML email view
+    if int(args.emit_html) == 1:
+        try:
+            # Grab the script text for the email "Script (Reference)" section
+            script_path = os.path.abspath(__file__)
+            with open(script_path, "r", encoding="utf-8") as f:
+                script_text = f.read()
+        except Exception:
+            script_text = "# (Could not read script file from disk.)"
+
+        html_email = render_html_email(df, checklist, script_text, date_str, args)
+
+        if args.html_out.strip():
+            html_path = args.html_out.strip()
+        else:
+            base, _ = os.path.splitext(args.save)
+            html_path = f"{base}_email_{date_str}.html"
+
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_email)
+        print(f"HTML email view saved to: {html_path}")
 
     return 0
 
