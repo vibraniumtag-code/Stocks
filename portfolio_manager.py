@@ -169,7 +169,7 @@ def smtp_ready() -> bool:
 def send_email(subject: str, text_body: str, html_body: str) -> None:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = SMTP_USER
+    msg["From"] = f"Scanner <{SMTP_USER}>"
     msg["To"] = EMAIL_TO
 
     msg.attach(MIMEText(text_body, "plain", "utf-8"))
