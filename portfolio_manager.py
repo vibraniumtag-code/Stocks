@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 portfolio_manager.py  (FULL SCRIPT — HTML email tables + plain-text fallback)
+UPDATED: Unlimited positions; NEW BUYS limited by FREED CASH ONLY (no MAX_POSITIONS / slot budget cap)
 
 Fixes & features included:
 - ✅ HTML email tables (nice table view) + plain text fallback
@@ -10,6 +11,9 @@ Fixes & features included:
 - ✅ Robust env parsing (no int('') / float('') crashes)
 - ✅ Avoids pandas strict string dtype issues by using object dtype for mixed cols
 - ✅ Saves portfolio_plan.csv in repo workspace
+- ✅ NEW: Buys are funded ONLY by freed_cash from planned sells (unlimited slots)
+- ✅ NEW: Better scanner cost estimation supports OptionLast / OptionMid / OptionPrice fallbacks
+- ✅ NEW: Clear diagnostics in email details for freed_cash + scanner status
 
 Required positions.csv columns:
   ticker, option_name, option_entry_price, underlying_entry_price
@@ -114,11 +118,13 @@ def num(x, n=2) -> str:
 CSV_FILE = env_str("CSV_FILE", "positions.csv")
 PLAN_FILE = env_str("PLAN_FILE", "portfolio_plan.csv")
 
-MAX_POSITIONS = env_int("MAX_POSITIONS", 4)
-CASH_BUFFER_PCT = env_float("CASH_BUFFER_PCT", 0.05)
+# Buys-per-run + sizing caps (still respected)
 MAX_NEW_PER_RUN = env_int("MAX_NEW_PER_RUN", 2)
 MAX_CONTRACTS_PER_POSITION = env_int("MAX_CONTRACTS_PER_POSITION", 6)
 CONTRACT_MULTIPLIER = env_int("CONTRACT_MULTIPLIER", 100)
+
+# Keep cash buffer only for reporting (does not cap buys now)
+CASH_BUFFER_PCT = env_float("CASH_BUFFER_PCT", 0.05)
 
 ATR_PERIOD = env_int("ATR_PERIOD", 14)
 ATR_MULTIPLIER = env_float("ATR_MULTIPLIER", 1.5)
@@ -415,13 +421,18 @@ def option_position_value(option_price: Optional[float], contracts: int) -> floa
     return float(option_price) * CONTRACT_MULTIPLIER * contracts
 
 def estimate_cost_from_entry_row(r: pd.Series) -> float:
-    try:
-        p = float(r.get("OptionLast", ""))
-        if not np.isfinite(p) or p <= 0:
-            return float("inf")
-        return p * CONTRACT_MULTIPLIER
-    except Exception:
-        return float("inf")
+    """
+    Try multiple column names from the scanner.
+    Uses first valid positive price found.
+    """
+    for col in ("OptionLast", "OptionMid", "OptionPrice", "Mid", "Last"):
+        try:
+            p = float(r.get(col, ""))
+            if np.isfinite(p) and p > 0:
+                return p * CONTRACT_MULTIPLIER
+        except Exception:
+            continue
+    return float("inf")
 
 
 # =========================
@@ -589,11 +600,12 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
 """
         )
 
+    # Oversize trim (kept as-is; independent of buys)
+    # Note: Without slot_budget, we approximate "oversize" vs average position size.
     usable_value = total_value * (1.0 - CASH_BUFFER_PCT)
-    slot_budget = (usable_value / max(MAX_POSITIONS, 1)) if total_value > 0 else 0.0
+    avg_pos_budget = usable_value / max(len(enriched), 1) if usable_value > 0 else 0.0
 
-    # Oversize trim
-    if TRIM_TO_SLOT and slot_budget > 0:
+    if TRIM_TO_SLOT and avg_pos_budget > 0:
         for i, row in enriched.iterrows():
             contracts = to_int(row.get("contracts", 1), 1)
             if contracts <= 1:
@@ -605,9 +617,9 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
             s_exit = to_int(row.get("sell_count_exit", 0), 0)
             if s_exit >= contracts:
                 continue
-            if pos_value > slot_budget * OVERSIZE_MULT:
+            if pos_value > avg_pos_budget * OVERSIZE_MULT:
                 cost1 = option_mark * CONTRACT_MULTIPLIER
-                target_contracts = int(max(1, min(MAX_CONTRACTS_PER_POSITION, slot_budget // cost1)))
+                target_contracts = int(max(1, min(MAX_CONTRACTS_PER_POSITION, avg_pos_budget // cost1)))
                 sell_needed = max(0, contracts - target_contracts)
                 if sell_needed > 0:
                     enriched.at[i, "sell_count_opt"] = sell_needed
@@ -634,55 +646,64 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
 
     open_positions = enriched[enriched.apply(will_be_open, axis=1)]
     open_tickers = set(open_positions["ticker"].astype(str).str.upper().str.strip().tolist())
-    remaining_slots = max(MAX_POSITIONS - len(open_positions), 0)
 
+    # ---- Scanner + buys (freed_cash ONLY; unlimited slots)
     entries = run_entry_scan()
     if entries is None:
         entries = pd.DataFrame()
 
     buy_rows: List[Dict[str, Any]] = []
-    if remaining_slots > 0 and freed_cash > 0 and not entries.empty:
+    scanner_diag = [
+        f"DIAG: freed_cash={freed_cash:.2f}",
+        f"DIAG: scanner_rows={len(entries) if entries is not None else 0}",
+        f"DIAG: scanner_cols={list(entries.columns) if entries is not None else []}",
+    ]
+    report_lines.extend(scanner_diag)
+
+    if freed_cash > 0 and not entries.empty:
         cand = entries.copy()
-        cand["Ticker"] = cand["Ticker"].astype(str).str.upper().str.strip()
-        cand = cand[~cand["Ticker"].isin(open_tickers)].copy()
+        if "Ticker" not in cand.columns:
+            report_lines.append("DIAG: Scanner missing 'Ticker' column -> cannot buy.")
+        else:
+            cand["Ticker"] = cand["Ticker"].astype(str).str.upper().str.strip()
+            cand = cand[~cand["Ticker"].isin(open_tickers)].copy()
 
-        cand["EstCost1"] = cand.apply(estimate_cost_from_entry_row, axis=1)
-        cand = cand.replace([np.inf, -np.inf], np.nan).dropna(subset=["EstCost1"])
-        cand = cand.sort_values(["EstCost1", "Ticker"])
+            cand["EstCost1"] = cand.apply(estimate_cost_from_entry_row, axis=1)
+            cand = cand.replace([np.inf, -np.inf], np.nan).dropna(subset=["EstCost1"])
+            cand = cand.sort_values(["EstCost1", "Ticker"])
 
-        cash_left = freed_cash
-        adds = 0
+            cash_left = freed_cash
+            adds = 0
 
-        for _, r in cand.iterrows():
-            if adds >= min(remaining_slots, MAX_NEW_PER_RUN):
-                break
+            for _, r in cand.iterrows():
+                if adds >= MAX_NEW_PER_RUN:
+                    break
 
-            est1 = float(r["EstCost1"])
-            if not np.isfinite(est1) or est1 <= 0:
-                continue
+                est1 = float(r["EstCost1"])
+                if not np.isfinite(est1) or est1 <= 0:
+                    continue
 
-            max_by_cash = int(cash_left // est1)
-            max_by_slot = int(slot_budget // est1) if slot_budget > 0 else max_by_cash
-            buy_n = max(0, min(max_by_cash, max_by_slot, MAX_CONTRACTS_PER_POSITION))
-            if buy_n <= 0:
-                continue
+                max_by_cash = int(cash_left // est1)
+                buy_n = max(0, min(max_by_cash, MAX_CONTRACTS_PER_POSITION))
+                if buy_n <= 0:
+                    continue
 
-            ticker = str(r["Ticker"]).upper()
-            cash_left -= buy_n * est1
-            adds += 1
-            open_tickers.add(ticker)
+                ticker = str(r["Ticker"]).upper()
+                cash_left -= buy_n * est1
+                adds += 1
+                open_tickers.add(ticker)
 
-            buy_rows.append({
-                "Type": "BUY",
-                "Ticker": ticker,
-                "Strategy": str(r.get("Action", "")),
-                "Expiry": str(r.get("Expiry", "")),
-                "OptionSymbol": str(r.get("OptionSymbol", "")),
-                "OptionLast": num(r.get("OptionLast", ""), 2),
-                "BuyContracts": buy_n,
-                "EstCostTotal": round(buy_n * est1, 2),
-                "Reason": "New entry + budget available (from sells)",
-            })
+                buy_rows.append({
+                    "Type": "BUY",
+                    "Ticker": ticker,
+                    "Strategy": str(r.get("Action", "")),
+                    "Expiry": str(r.get("Expiry", "")),
+                    "OptionSymbol": str(r.get("OptionSymbol", "")),
+                    "OptionLast": num(r.get("OptionLast", r.get("OptionMid", r.get("OptionPrice", ""))), 2),
+                    "BuyContracts": buy_n,
+                    "EstCostTotal": round(buy_n * est1, 2),
+                    "Reason": "New entry funded by freed cash (from sells)",
+                })
 
     # ---- Plan DF (saved)
     plan_rows: List[Dict[str, Any]] = []
@@ -711,7 +732,7 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
     # ---- Plain text body (fallback)
     header_txt = []
     header_txt.append(f"PORTFOLIO MANAGER — {datetime.now().strftime('%Y-%m-%d')}")
-    header_txt.append(f"Total: {money2(total_value)} | Usable: {money2(usable_value)} | Slot: {money2(slot_budget)} | Freed: {money2(freed_cash)} | Slots: {remaining_slots}")
+    header_txt.append(f"Total: {money2(total_value)} | Usable: {money2(usable_value)} | Freed: {money2(freed_cash)} | NewBuys: {len(buy_rows)}")
     header_txt.append(f"Scanner: TotalNarrow.py")
     header_txt.append(f"Plan saved: {PLAN_FILE}")
     header_txt.append("")
@@ -739,9 +760,8 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
       <div style="margin:0 0 12px; font-size:14px;">
         <b>Total:</b> {money2(total_value)} &nbsp;·&nbsp;
         <b>Usable:</b> {money2(usable_value)} &nbsp;·&nbsp;
-        <b>Slot:</b> {money2(slot_budget)} &nbsp;·&nbsp;
-        <b>Freed:</b> {money2(freed_cash)} &nbsp;·&nbsp;
-        <b>Slots:</b> {remaining_slots}
+        <b>Freed (for buys):</b> {money2(freed_cash)} &nbsp;·&nbsp;
+        <b>New buys:</b> {len(buy_rows)}
       </div>
 
       {df_to_html_table(existing_df, "Existing Positions — Action Plan")}
