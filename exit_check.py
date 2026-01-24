@@ -2,13 +2,20 @@
 """
 exit_check.py
 
-Per position outputs:
-- 10d & 5d trend status (CLOSE and CURRENT)
-- ATR advice (CLOSE and CURRENT) as informational
-- Recommendation: HOLD / SELL_1 / SELL_2 / SELL_ALL (never exceeds contracts)
+Outputs:
+- CLOSE-based: 10d & 5d trend (INTACT/BROKEN) and actions (HOLD/SELL)
+- CURRENT-based: 10d & 5d trend (INTACT/BROKEN) and actions (HOLD/SELL)
+- ATR advice (CLOSE & CURRENT): OK / CLOSE / VERY CLOSE / STOP HIT (informational)
+- RECOMMENDATION: HOLD / SELL_1 / SELL_2 / ... / SELL_ALL (based on contracts)
 
-CSV columns:
+Structure levels + ATR are computed from COMPLETED daily bars only
+(today's partial bar is excluded when present).
+
+CSV required columns:
 ticker, option_name, underlying_entry_price, option_entry_price, contracts
+
+SMTP env vars (GitHub Secrets):
+SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
 """
 
 import os
@@ -29,12 +36,20 @@ ATR_MULTIPLIER = 1.5
 STRUCTURE_10 = 10
 STRUCTURE_5 = 5
 
+# ATR proximity advice thresholds (in ATR units)
+ATR_VERY_CLOSE = float(os.getenv("ATR_VERY_CLOSE", "0.25"))
+ATR_CLOSE = float(os.getenv("ATR_CLOSE", "0.50"))
+
 CSV_FILE = "positions.csv"
 
-# If you later want auto-update of contracts in CSV + commit, we can enable it.
+# If true, script will reduce contracts in CSV based on RECOMMENDATION (paper execution)
 APPLY_RECOMMENDATIONS = os.getenv("APPLY_RECOMMENDATIONS", "false").strip().lower() == "true"
 
-# SMTP / EMAIL (GITHUB SECRETS)
+# Recommendation mode: which price to use for the recommendation
+# "current" (default) or "close"
+RECO_MODE = os.getenv("RECO_MODE", "current").strip().lower()
+
+# SMTP / EMAIL (FROM GITHUB SECRETS)
 SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
 SMTP_PORT_RAW = (os.getenv("SMTP_PORT") or "").strip()
 SMTP_PORT = int(SMTP_PORT_RAW) if SMTP_PORT_RAW.isdigit() else 0
@@ -44,10 +59,6 @@ EMAIL_TO = os.getenv("EMAIL_TO", "").strip()
 
 EMAIL_MODE = os.getenv("EMAIL_MODE", "always").strip().lower()  # always | exits_only
 HISTORY_PERIOD = os.getenv("HISTORY_PERIOD", "9mo").strip()
-
-# ATR proximity advice thresholds (in ATR units)
-ATR_VERY_CLOSE = float(os.getenv("ATR_VERY_CLOSE", "0.25"))
-ATR_CLOSE = float(os.getenv("ATR_CLOSE", "0.50"))
 
 
 # =========================
@@ -141,16 +152,27 @@ def remove_today_partial_bar(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def prior_window(df_completed: pd.DataFrame, n: int) -> pd.DataFrame:
+    # prior N bars excluding the most recent completed bar
     return df_completed.iloc[-(n + 1):-1]
 
 
-def trend_status(structure_broken: bool) -> str:
-    return "BROKEN" if structure_broken else "INTACT"
+def action_and_trend(structure_broken: bool) -> Tuple[str, str]:
+    trend = "BROKEN" if structure_broken else "INTACT"
+    action = "SELL" if structure_broken else "HOLD"
+    return action, trend
 
 
 def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
+    """
+    Best-effort current/last price with a source label:
+    1) fast_info.last_price
+    2) info.regularMarketPrice
+    3) 1m intraday history last close
+    Fallback to provided value if all fail.
+    """
     t = yf.Ticker(ticker)
 
+    # 1) fast_info
     try:
         fi = getattr(t, "fast_info", None)
         if fi:
@@ -160,6 +182,7 @@ def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
     except Exception:
         pass
 
+    # 2) info
     try:
         info = getattr(t, "info", None)
         if isinstance(info, dict):
@@ -169,6 +192,7 @@ def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
     except Exception:
         pass
 
+    # 3) intraday
     try:
         intraday = t.history(period="1d", interval="1m")
         if intraday is not None and not intraday.empty and "Close" in intraday.columns:
@@ -179,48 +203,49 @@ def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
     return float(fallback), "fallback_daily_close"
 
 
-def atr_advice(is_call: bool, price: float, atr_stop: float, atr: float) -> Tuple[str, float, float]:
+def atr_advice(is_call: bool, price: float, atr_stop: float, atr: float) -> Tuple[str, float, float, bool]:
+    """
+    Returns: (advice_text, distance_dollars, distance_atr_units, stop_hit_bool)
+    distance is "room until stop" (positive=room left, negative=beyond stop):
+      CALL: dist = price - stop
+      PUT : dist = stop - price
+    """
     if atr <= 0:
-        return "ATR unavailable", 0.0, 0.0
+        return "ATR unavailable", 0.0, 0.0, False
 
     if is_call:
         dist = float(price - atr_stop)
-        hit = price <= atr_stop
+        stop_hit = bool(price <= atr_stop)
     else:
         dist = float(atr_stop - price)
-        hit = price >= atr_stop
+        stop_hit = bool(price >= atr_stop)
 
     dist_atr = float(dist / atr)
 
-    if hit:
-        return "STOP HIT", dist, dist_atr
+    if stop_hit:
+        return "STOP HIT", dist, dist_atr, True
     if dist_atr <= ATR_VERY_CLOSE:
-        return f"VERY CLOSE (≤ {ATR_VERY_CLOSE:.2f} ATR)", dist, dist_atr
+        return f"VERY CLOSE (≤ {ATR_VERY_CLOSE:.2f} ATR)", dist, dist_atr, False
     if dist_atr <= ATR_CLOSE:
-        return f"CLOSE (≤ {ATR_CLOSE:.2f} ATR)", dist, dist_atr
-    return "OK", dist, dist_atr
+        return f"CLOSE (≤ {ATR_CLOSE:.2f} ATR)", dist, dist_atr, False
+    return "OK", dist, dist_atr, False
 
 
 def decide_sell_count(contracts: int, broken10: bool, broken5: bool) -> int:
     """
-    Returns number of contracts to sell:
+    Sell sizing logic (edit as you like):
       - 10d broken => sell all
-      - else 5d broken => sell some if possible (2 if >=3, 1 if ==2, all if ==1)
+      - else 5d broken => sell 2 if >=3, sell 1 if ==2, sell 1 if ==1 (all)
       - else => 0
     """
     if contracts <= 0:
         return 0
-
     if broken10:
         return contracts
-
     if broken5:
         if contracts >= 3:
             return 2
-        if contracts == 2:
-            return 1
-        return 1  # contracts==1 -> sell 1 (all)
-
+        return 1
     return 0
 
 
@@ -239,7 +264,7 @@ def label_action(sell_count: int, contracts: int) -> str:
 # =========================
 def main():
     if not os.path.exists(CSV_FILE):
-        raise FileNotFoundError("positions.csv not found")
+        raise FileNotFoundError("positions.csv not found in repo root")
 
     positions = pd.read_csv(CSV_FILE)
 
@@ -249,12 +274,11 @@ def main():
         raise ValueError(f"positions.csv missing required columns: {sorted(missing)}")
 
     report = []
-    any_sell = False
+    any_action = False
 
-    min_needed = max(ATR_PERIOD, STRUCTURE_10) + 10
-
-    # Track optional updates if APPLY_RECOMMENDATIONS=true
     updated_positions = positions.copy()
+
+    min_needed = max(ATR_PERIOD, STRUCTURE_10) + 10  # buffer
 
     for idx, row in positions.iterrows():
         ticker = str(row.get("ticker", "")).strip().upper()
@@ -278,12 +302,13 @@ def main():
             continue
 
         df = flatten_columns(df).dropna()
+
         close_price = float(df["Close"].iloc[-1])
         current_price, current_src = get_current_price(ticker, fallback=close_price)
 
         df_completed = remove_today_partial_bar(df).dropna()
         if len(df_completed) < min_needed:
-            report.append(f"{ticker}: SKIPPED (insufficient history)")
+            report.append(f"{ticker}: SKIPPED (insufficient completed history: {len(df_completed)} rows)")
             continue
 
         atr_series = calculate_atr(df_completed, ATR_PERIOD)
@@ -302,9 +327,11 @@ def main():
         low10, high10 = float(w10["Low"].min()), float(w10["High"].max())
         low5, high5 = float(w5["Low"].min()), float(w5["High"].max())
 
+        # ATR stop (from underlying entry)
         if is_call:
             atr_stop = float(entry_underlying - ATR_MULTIPLIER * atr)
 
+            # Structure break rules (CALL)
             broken10_close = bool(close_price < low10)
             broken5_close = bool(close_price < low5)
             broken10_current = bool(current_price < low10)
@@ -312,23 +339,37 @@ def main():
         else:
             atr_stop = float(entry_underlying + ATR_MULTIPLIER * atr)
 
+            # Structure break rules (PUT)
             broken10_close = bool(close_price > high10)
             broken5_close = bool(close_price > high5)
             broken10_current = bool(current_price > high10)
             broken5_current = bool(current_price > high5)
 
-        # ATR advice only
-        atr_adv_close, atr_dist_close, atr_dist_close_atr = atr_advice(is_call, close_price, atr_stop, atr)
-        atr_adv_current, atr_dist_cur, atr_dist_cur_atr = atr_advice(is_call, current_price, atr_stop, atr)
+        # Build the exact sections you asked for
+        action10_close, trend10_close = action_and_trend(broken10_close)
+        action5_close, trend5_close = action_and_trend(broken5_close)
 
-        # Recommendation uses CURRENT mode by default (more protective intraday)
-        sell_count = decide_sell_count(contracts, broken10_current, broken5_current)
-        action = label_action(sell_count, contracts)
+        action10_current, trend10_current = action_and_trend(broken10_current)
+        action5_current, trend5_current = action_and_trend(broken5_current)
 
-        if action != "HOLD":
-            any_sell = True
+        # ATR advice for both prices
+        atr_adv_close, atr_dist_close, atr_dist_close_atr, atr_hit_close = atr_advice(is_call, close_price, atr_stop, atr)
+        atr_adv_cur, atr_dist_cur, atr_dist_cur_atr, atr_hit_cur = atr_advice(is_call, current_price, atr_stop, atr)
 
-        # Optional CSV update (paper execution)
+        # Recommendation (uses RECO_MODE)
+        if RECO_MODE == "close":
+            sell_count = decide_sell_count(contracts, broken10_close, broken5_close)
+            reco_basis = "CLOSE"
+        else:
+            sell_count = decide_sell_count(contracts, broken10_current, broken5_current)
+            reco_basis = "CURRENT"
+
+        recommendation = label_action(sell_count, contracts)
+
+        if recommendation != "HOLD":
+            any_action = True
+
+        # Optional: paper update contracts in CSV
         if APPLY_RECOMMENDATIONS and sell_count > 0:
             new_contracts = max(contracts - sell_count, 0)
             updated_positions.at[idx, "contracts"] = new_contracts
@@ -345,30 +386,35 @@ Prior 10d Low/High: {low10:.2f} / {high10:.2f}
 Prior 5d  Low/High: {low5:.2f} / {high5:.2f}
 
 Prices:
-Close:   {close_price:.2f}
-Current: {current_price:.2f}  (source: {current_src})
-
-Trend (CLOSE):
-10d: {trend_status(broken10_close)}   | 5d: {trend_status(broken5_close)}
-
-Trend (CURRENT):
-10d: {trend_status(broken10_current)} | 5d: {trend_status(broken5_current)}
+Close price used:   {close_price:.2f}
+Current price used: {current_price:.2f}  (source: {current_src})
 
 ATR advice:
-CLOSE:   {atr_adv_close}   dist {atr_dist_close:+.2f} ({atr_dist_close_atr:+.2f} ATR)
-CURRENT: {atr_adv_current} dist {atr_dist_cur:+.2f} ({atr_dist_cur_atr:+.2f} ATR)
+CLOSE:   {atr_adv_close}   dist {atr_dist_close:+.2f} USD ({atr_dist_close_atr:+.2f} ATR)
+CURRENT: {atr_adv_cur}     dist {atr_dist_cur:+.2f} USD ({atr_dist_cur_atr:+.2f} ATR)
 
-RECOMMENDATION: {action}
+=== Based on CLOSE price ===
+10 Days action : {action10_close}
+10 Days trend  : {trend10_close}
+5 Days action  : {action5_close}
+5 Days trend   : {trend5_close}
+
+=== Based on CURRENT price ===
+10 Days action : {action10_current}
+10 Days trend  : {trend10_current}
+5 Days action  : {action5_current}
+5 Days trend   : {trend5_current}
+
+RECOMMENDATION ({reco_basis}): {recommendation}
 """
         )
 
-    subject = "🚨 ACTION NEEDED – Position Recommendations" if any_sell else "✅ No Action – Hold Positions"
+    subject = "🚨 ACTION NEEDED – Recommendations" if any_action else "✅ No Action – Hold"
     body = "\n-------------------------\n".join(report) if report else "No valid positions found in positions.csv."
 
-    # If APPLY_RECOMMENDATIONS, write updated CSV (paper)
     if APPLY_RECOMMENDATIONS and not updated_positions.equals(positions):
         updated_positions.to_csv(CSV_FILE, index=False)
-        body += "\n\nNOTE: APPLY_RECOMMENDATIONS=true, positions.csv contracts were updated (paper execution).\n"
+        body += "\n\nNOTE: APPLY_RECOMMENDATIONS=true — positions.csv contracts were reduced (paper execution).\n"
 
     if not smtp_ready():
         print("SMTP secrets not set — printing report instead\n")
@@ -376,7 +422,7 @@ RECOMMENDATION: {action}
         print(body)
         return
 
-    if EMAIL_MODE == "exits_only" and not any_sell:
+    if EMAIL_MODE == "exits_only" and not any_action:
         return
 
     send_email(subject, body)
