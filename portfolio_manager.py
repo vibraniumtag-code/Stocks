@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-portfolio_manager.py  (UPDATED: nicer-looking tables in email + stdout)
+portfolio_manager.py  (UPDATED: HTML email tables + plain-text fallback)
 
-What changed vs previous version:
-- Adds clean, readable plain-text tables for:
-  1) Existing positions (SELL/HOLD) summary
-  2) New entries (BUY) summary
-- Email body now shows these tables first (then the detailed per-position diagnostics)
-- Still saves portfolio_plan.csv exactly like before
-- Keeps your current positions.csv format
+- Sends a REAL HTML table in email (nice table view in Gmail/Outlook)
+- Also includes a plain-text fallback version for clients that block HTML
+- Keeps your current positions.csv format (no changes required)
 - Scanner import name: TotalNarrow.py
-- Fixes:
-  * empty env var crash (float(''))
-  * pandas string dtype crash when setting floats (option_mark)
-- Email env: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
+- Robust to empty env vars (no float('') / int('') crashes)
+- Fixes pandas strict string dtype issues
+- Still saves portfolio_plan.csv
+
+Required positions.csv columns:
+  ticker, option_name, option_entry_price, underlying_entry_price
+Optional:
+  contracts (defaults to 1), entry_date (ignored)
+
+Email env vars (GitHub secrets):
+  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
 """
 
 import os
@@ -21,12 +24,14 @@ import re
 import ssl
 import smtplib
 from datetime import datetime
-from email.mime.text import MIMEText
 from typing import Optional, Tuple, Dict, Any, List
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 
 # =========================
@@ -72,6 +77,33 @@ def to_int(x, default=1) -> int:
     except Exception:
         return default
 
+def money2(x) -> str:
+    try:
+        v = float(x)
+        if not np.isfinite(v):
+            return ""
+        return f"${v:,.2f}"
+    except Exception:
+        return ""
+
+def money0(x) -> str:
+    try:
+        v = float(x)
+        if not np.isfinite(v):
+            return ""
+        return f"${v:,.0f}"
+    except Exception:
+        return ""
+
+def num(x, n=2) -> str:
+    try:
+        v = float(x)
+        if not np.isfinite(v):
+            return ""
+        return f"{v:.{n}f}"
+    except Exception:
+        return ""
+
 
 # =========================
 # CONFIG (safe)
@@ -100,102 +132,26 @@ TRIM_TO_SLOT = env_str("TRIM_TO_SLOT", "true").lower() == "true"
 # Email env
 SMTP_HOST = env_str("SMTP_HOST", "")
 SMTP_PORT = env_int("SMTP_PORT", 0)
-SMTP_USER = env_str("SMTP_USER", "Scanner")
+SMTP_USER = env_str("SMTP_USER", "")
 SMTP_PASS = env_str("SMTP_PASS", "")
 EMAIL_TO = env_str("EMAIL_TO", "")
 EMAIL_MODE = env_str("EMAIL_MODE", "always").lower()  # always | action_only
 
 
 # =========================
-# PRETTY TABLE HELPERS (plain text)
-# =========================
-def _str(x) -> str:
-    if x is None:
-        return ""
-    if isinstance(x, float) and (np.isnan(x) or not np.isfinite(x)):
-        return ""
-    return str(x)
-
-def _money(x) -> str:
-    try:
-        v = float(x)
-        if not np.isfinite(v):
-            return ""
-        return f"${v:,.0f}"
-    except Exception:
-        return ""
-
-def _money2(x) -> str:
-    try:
-        v = float(x)
-        if not np.isfinite(v):
-            return ""
-        return f"${v:,.2f}"
-    except Exception:
-        return ""
-
-def _num(x, n=2) -> str:
-    try:
-        v = float(x)
-        if not np.isfinite(v):
-            return ""
-        return f"{v:.{n}f}"
-    except Exception:
-        return ""
-
-def format_table(headers: List[str], rows: List[List[str]], max_col_width: int = 50) -> str:
-    """
-    Minimal fixed-width table formatter (no external deps).
-    """
-    # Clamp and compute widths
-    cols = len(headers)
-    safe_rows = []
-    for r in rows:
-        rr = [(r[i] if i < len(r) else "") for i in range(cols)]
-        rr = [_str(x) for x in rr]
-        safe_rows.append(rr)
-
-    def clamp(s: str) -> str:
-        s = _str(s)
-        s = s.replace("\n", " ").replace("\r", " ").strip()
-        if len(s) > max_col_width:
-            return s[: max_col_width - 1] + "…"
-        return s
-
-    headers_c = [clamp(h) for h in headers]
-    rows_c = [[clamp(c) for c in r] for r in safe_rows]
-
-    widths = []
-    for j in range(cols):
-        w = len(headers_c[j])
-        for r in rows_c:
-            w = max(w, len(r[j]))
-        widths.append(w)
-
-    def line(char="-") -> str:
-        return "+-" + "-+-".join(char * w for w in widths) + "-+"
-
-    def rowline(cells: List[str]) -> str:
-        return "| " + " | ".join(cells[j].ljust(widths[j]) for j in range(cols)) + " |"
-
-    out = [line("-"), rowline(headers_c), line("=")]
-    for r in rows_c:
-        out.append(rowline(r))
-    out.append(line("-"))
-    return "\n".join(out)
-
-
-# =========================
-# EMAIL
+# EMAIL (HTML + TEXT)
 # =========================
 def smtp_ready() -> bool:
     return all([SMTP_HOST, SMTP_PORT > 0, SMTP_USER, SMTP_PASS, EMAIL_TO])
 
-def send_email(subject: str, body: str) -> None:
-    msg = MIMEText(body, _subtype="plain", _charset="utf-8")
+def send_email(subject: str, text_body: str, html_body: str) -> None:
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = SMTP_USER
     msg["To"] = EMAIL_TO
+
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     if SMTP_PORT == 465:
         ctx = ssl.create_default_context()
@@ -209,6 +165,45 @@ def send_email(subject: str, body: str) -> None:
             server.ehlo()
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
+
+
+# =========================
+# HTML TABLE BUILDER
+# =========================
+def html_escape(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def df_to_html_table(df: pd.DataFrame, title: str) -> str:
+    if df is None or df.empty:
+        return f"<h3 style='margin:16px 0 6px;'>{html_escape(title)}</h3><div>No rows.</div>"
+
+    safe = df.copy().fillna("")
+    # Escape all cells to avoid HTML issues
+    safe = safe.astype(str).applymap(html_escape)
+
+    ths = "".join(
+        f"<th style='border:1px solid #ddd; padding:8px; text-align:left; background:#f5f5f5;'>{html_escape(c)}</th>"
+        for c in safe.columns
+    )
+
+    trs = []
+    for i in range(len(safe)):
+        tds = "".join(
+            f"<td style='border:1px solid #ddd; padding:8px; vertical-align:top;'>{safe.iloc[i, j]}</td>"
+            for j in range(safe.shape[1])
+        )
+        bg = "#ffffff" if (i % 2 == 0) else "#fafafa"
+        trs.append(f"<tr style='background:{bg};'>{tds}</tr>")
+
+    return f"""
+    <h3 style="margin:16px 0 6px;">{html_escape(title)}</h3>
+    <table style="border-collapse:collapse; width:100%; font-family:Arial, sans-serif; font-size:14px;">
+      <thead><tr>{ths}</tr></thead>
+      <tbody>
+        {''.join(trs)}
+      </tbody>
+    </table>
+    """
 
 
 # =========================
@@ -378,19 +373,11 @@ def run_entry_scan() -> pd.DataFrame:
         import TotalNarrow as scan
     except Exception:
         return pd.DataFrame()
-
     if hasattr(scan, "generate_new_entries"):
         try:
             return scan.generate_new_entries()
-        except TypeError:
-            try:
-                return scan.generate_new_entries(top=getattr(scan, "TOP_N_BY_DEFAULT", 300),
-                                                 system=getattr(scan, "SYSTEM_DEFAULT", 1))
-            except Exception:
-                return pd.DataFrame()
         except Exception:
             return pd.DataFrame()
-
     return pd.DataFrame()
 
 
@@ -403,9 +390,7 @@ def decide_sell_count(contracts: int, broken10: bool, broken5: bool) -> int:
     if broken10:
         return contracts
     if broken5:
-        if contracts >= 3:
-            return 2
-        return 1
+        return 2 if contracts >= 3 else 1
     return 0
 
 def label_sell(sell_count: int, contracts: int) -> str:
@@ -440,7 +425,6 @@ def main():
         raise FileNotFoundError(f"{CSV_FILE} not found")
 
     positions = pd.read_csv(CSV_FILE)
-
     if "contracts" not in positions.columns:
         positions["contracts"] = 1
 
@@ -465,7 +449,7 @@ def main():
     total_value = 0.0
     min_needed = max(ATR_PERIOD, STRUCTURE_10) + 10
 
-    # -------- 1) Value + exit signals --------
+    # ---- value + exit signals
     for i, row in positions.iterrows():
         ticker = str(row["ticker"]).strip().upper()
         option_name = str(row["option_name"]).strip()
@@ -527,7 +511,6 @@ def main():
         if not parsed:
             enriched.at[i, "recommendation_final"] = "BAD_OPTION_NAME"
             continue
-
         _, _, opt_type, _ = parsed
         is_call = (opt_type == "CALL")
         direction = opt_type
@@ -598,26 +581,22 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
 """
         )
 
-    # -------- 2) Slot budget --------
     usable_value = total_value * (1.0 - CASH_BUFFER_PCT)
     slot_budget = (usable_value / max(MAX_POSITIONS, 1)) if total_value > 0 else 0.0
 
-    # -------- 3) Oversize trim --------
+    # Oversize trim
     if TRIM_TO_SLOT and slot_budget > 0:
         for i, row in enriched.iterrows():
             contracts = to_int(row.get("contracts", 1), 1)
             if contracts <= 1:
                 continue
-
             pos_value = float(row.get("pos_value", 0.0) or 0.0)
             option_mark = to_float(row.get("option_mark", np.nan))
             if option_mark is None or not np.isfinite(option_mark) or option_mark <= 0:
                 continue
-
             s_exit = to_int(row.get("sell_count_exit", 0), 0)
             if s_exit >= contracts:
                 continue
-
             if pos_value > slot_budget * OVERSIZE_MULT:
                 cost1 = option_mark * CONTRACT_MULTIPLIER
                 target_contracts = int(max(1, min(MAX_CONTRACTS_PER_POSITION, slot_budget // cost1)))
@@ -626,7 +605,7 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
                     enriched.at[i, "sell_count_opt"] = sell_needed
                     any_action = True
 
-    # -------- 4) Merge sells + freed cash --------
+    # Merge sells + freed cash
     freed_cash = 0.0
     for i, row in enriched.iterrows():
         contracts = to_int(row.get("contracts", 1), 1)
@@ -649,7 +628,6 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
     open_tickers = set(open_positions["ticker"].astype(str).str.upper().str.strip().tolist())
     remaining_slots = max(MAX_POSITIONS - len(open_positions), 0)
 
-    # -------- 5) Entry scan + buy plan --------
     entries = run_entry_scan()
     if entries is None:
         entries = pd.DataFrame()
@@ -692,111 +670,100 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
                 "Strategy": str(r.get("Action", "")),
                 "Expiry": str(r.get("Expiry", "")),
                 "OptionSymbol": str(r.get("OptionSymbol", "")),
-                "OptionLast": _num(r.get("OptionLast", ""), 2),
+                "OptionLast": num(r.get("OptionLast", ""), 2),
                 "BuyContracts": buy_n,
                 "EstCostTotal": round(buy_n * est1, 2),
-                "Reason": "New entry + budget available (from sells)"
+                "Reason": "New entry + budget available (from sells)",
             })
 
-    # -------- 6) Build plan dataframe (for csv) --------
+    # ---- Plan DF (saved)
     plan_rows: List[Dict[str, Any]] = []
     for _, r in enriched.iterrows():
         ticker = str(r.get("ticker", "")).strip().upper()
         option_name = str(r.get("option_name", "")).strip()
-        contracts = to_int(r.get("contracts", 1), 1)
+        held = to_int(r.get("contracts", 1), 1)
         sell_n = to_int(r.get("sell_count_final", 0), 0)
-        if contracts <= 0:
+        if held <= 0:
             continue
         plan_rows.append({
             "Type": "SELL" if sell_n > 0 else "HOLD",
             "Ticker": ticker,
             "Option": option_name,
-            "ContractsHeld": contracts,
+            "ContractsHeld": held,
             "SellContracts": sell_n,
             "Recommendation": str(r.get("recommendation_final", "HOLD")),
             "PositionValue": round(float(r.get("pos_value", 0.0) or 0.0), 2),
-            "OptionMark": r.get("option_mark", ""),
-            "Reason": ("Structure/Trim" if sell_n > 0 else "No action")
+            "OptionMark": "" if pd.isna(r.get("option_mark")) else float(r.get("option_mark")),
+            "Reason": ("Structure/Trim" if sell_n > 0 else "No action"),
         })
     plan_rows.extend(buy_rows)
     plan_df = pd.DataFrame(plan_rows)
     plan_df.to_csv(PLAN_FILE, index=False)
 
-    # -------- 7) Build PRETTY tables for email/stdout --------
-    # Existing positions table
-    existing_rows = []
-    for _, r in plan_df[plan_df["Type"].isin(["SELL", "HOLD"])].iterrows():
-        existing_rows.append([
-            _str(r.get("Type", "")),
-            _str(r.get("Ticker", "")),
-            _str(r.get("Option", "")),
-            _str(r.get("ContractsHeld", "")),
-            _str(r.get("SellContracts", "")),
-            _str(r.get("Recommendation", "")),
-            _money(_str(r.get("PositionValue", "")) if _str(r.get("PositionValue","")) != "" else r.get("PositionValue","")),
-            _num(r.get("OptionMark", ""), 2),
-            _str(r.get("Reason", "")),
-        ])
-    existing_table = format_table(
-        headers=["Action", "Ticker", "Option", "Held", "To Sell", "Final Call", "Pos Value", "Opt Mark", "Reason"],
-        rows=existing_rows,
-        max_col_width=55
-    ) if existing_rows else "(No existing positions found.)"
+    # ---- Plain text body (fallback)
+    header_txt = []
+    header_txt.append(f"PORTFOLIO MANAGER — {datetime.now().strftime('%Y-%m-%d')}")
+    header_txt.append(f"Total value: {money2(total_value)} | Usable: {money2(usable_value)} | Slot: {money2(slot_budget)} | Freed: {money2(freed_cash)}")
+    header_txt.append(f"Remaining slots: {remaining_slots}")
+    header_txt.append(f"Plan saved: {PLAN_FILE}")
+    header_txt.append("")
+    body_details = "\n-------------------------\n".join(report_lines) if report_lines else "No details."
+    text_body = "\n".join(header_txt) + "\nDETAILS\n=======\n" + body_details
 
-    # New entries table
-    buy_table = "(No new entries selected.)"
-    if buy_rows:
-        buy_rows_fmt = []
-        for b in buy_rows:
-            buy_rows_fmt.append([
-                "BUY",
-                _str(b.get("Ticker","")),
-                _str(b.get("Strategy","")),
-                _str(b.get("Expiry","")),
-                _str(b.get("OptionSymbol","")),
-                _str(b.get("OptionLast","")),
-                _str(b.get("BuyContracts","")),
-                _money2(b.get("EstCostTotal","")),
-                _str(b.get("Reason","")),
-            ])
-        buy_table = format_table(
-            headers=["Action", "Ticker", "Strategy", "Expiry", "OptionSymbol", "Opt Last", "Contracts", "Est Cost", "Reason"],
-            rows=buy_rows_fmt,
-            max_col_width=55
-        )
+    # ---- HTML body
+    existing_df = plan_df[plan_df["Type"].isin(["SELL", "HOLD"])][
+        ["Type", "Ticker", "Option", "ContractsHeld", "SellContracts", "Recommendation", "PositionValue", "OptionMark", "Reason"]
+    ].copy()
 
-    # -------- 8) Email / print --------
-    header = []
-    header.append(f"PORTFOLIO MANAGER — {datetime.now().strftime('%Y-%m-%d')}")
-    header.append(f"Total portfolio value (from positions.csv): {_money2(total_value)}")
-    header.append(f"Usable (after cash buffer {CASH_BUFFER_PCT:.0%}): {_money2(usable_value)}")
-    header.append(f"Slot budget (MAX_POSITIONS={MAX_POSITIONS}): {_money2(slot_budget)}")
-    header.append(f"Freed cash from sells (estimated): {_money2(freed_cash)}")
-    header.append(f"Remaining slots after SELL_ALL: {remaining_slots}")
-    header.append(f"Scanner: TotalNarrow.py")
-    header.append(f"Plan file saved: {PLAN_FILE}")
-    header.append("")
+    # pretty formatting for HTML cells
+    if not existing_df.empty:
+        existing_df["PositionValue"] = existing_df["PositionValue"].apply(money0)
+        existing_df["OptionMark"] = existing_df["OptionMark"].apply(lambda x: "" if x == "" else num(x, 2))
 
-    body = "\n".join(header)
-    body += "\nEXISTING POSITIONS — ACTION PLAN\n===============================\n"
-    body += existing_table + "\n"
-    body += "\nNEW ENTRIES — ACTION PLAN\n========================\n"
-    body += buy_table + "\n"
+    buy_df = plan_df[plan_df["Type"].isin(["BUY"])].copy()
+    if not buy_df.empty:
+        cols = ["Type", "Ticker", "Strategy", "Expiry", "OptionSymbol", "OptionLast", "BuyContracts", "EstCostTotal", "Reason"]
+        buy_df = buy_df[cols]
+        buy_df["EstCostTotal"] = buy_df["EstCostTotal"].apply(money2)
 
-    body += "\nDETAILS\n=======\n"
-    body += "\n-------------------------\n".join(report_lines) if report_lines else "No detailed rows.\n"
+    html = f"""
+    <div style="font-family:Arial, sans-serif; color:#111;">
+      <h2 style="margin:0 0 8px;">Portfolio Manager — {datetime.now().strftime('%Y-%m-%d')}</h2>
+      <div style="margin:0 0 12px; font-size:14px;">
+        <b>Total:</b> {money2(total_value)} &nbsp;·&nbsp;
+        <b>Usable:</b> {money2(usable_value)} &nbsp;·&nbsp;
+        <b>Slot:</b> {money2(slot_budget)} &nbsp;·&nbsp;
+        <b>Freed:</b> {money2(freed_cash)} &nbsp;·&nbsp;
+        <b>Slots:</b> {remaining_slots}
+      </div>
+
+      {df_to_html_table(existing_df, "Existing Positions — Action Plan")}
+      {df_to_html_table(buy_df, "New Entries — Action Plan")}
+
+      <details style="margin-top:14px;">
+        <summary style="cursor:pointer; font-weight:bold;">Diagnostics (details)</summary>
+        <pre style="white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size:12px; background:#f7f7f7; padding:10px; border:1px solid #eee;">
+{html_escape(body_details)}
+        </pre>
+      </details>
+
+      <div style="margin-top:10px; font-size:12px; color:#666;">
+        Plan file saved in runner as <b>{html_escape(PLAN_FILE)}</b> (upload as artifact to download).
+      </div>
+    </div>
+    """
 
     subject = "🚨 Portfolio Plan – Action Needed" if (any_action or len(buy_rows) > 0) else "✅ Portfolio Plan – No Action"
 
     if smtp_ready():
         if EMAIL_MODE == "action_only" and subject.startswith("✅"):
             return
-        send_email(subject, body)
+        send_email(subject, text_body=text_body, html_body=html)
         print(f"Email sent to {EMAIL_TO}. Plan saved: {PLAN_FILE}")
     else:
         print("SMTP secrets not set — printing report instead\n")
         print(subject)
-        print(body)
+        print(text_body)
 
 
 if __name__ == "__main__":
