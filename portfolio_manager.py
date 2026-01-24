@@ -1,14 +1,34 @@
 #!/usr/bin/env python3
 """
-portfolio_manager.py (FULL SCRIPT — HTML email tables + plain-text fallback)
-UPDATED: Unlimited positions; NEW BUYS limited by FREED CASH ONLY (no MAX_POSITIONS cap)
+portfolio_manager.py  (UPDATED WITH PYRAMIDING + HTML EMAIL TABLES)
 
-NEW in this version:
-- ✅ Entry scanner can be either:
-  (A) DataFrame-returning generate_new_entries()  OR
-  (B) print-only output (bullets) -> captured + parsed into a DataFrame
-- ✅ Buys funded ONLY by freed_cash from planned sells (unlimited slots)
-- ✅ Diagnostics show freed_cash + scanner rows/cols
+What’s new:
+- ✅ Pyramiding (ADD_1) on winners, gated by:
+  - 10D + 5D structure intact (current price)
+  - ATR advice == OK (not CLOSE / VERY CLOSE / STOP HIT)
+  - Option return >= PYR_L1 / PYR_L2
+  - Budget available (PYR_ADD_BUDGET_PCT of account value per run)
+  - Max contracts cap (MAX_CONTRACTS_PER_POSITION)
+- ✅ Adds "AddContracts" + "PyramidReason" columns to the plan + email tables
+- ✅ Keeps your positions.csv format (no change required)
+- ✅ Still uses TotalNarrow scanner (DataFrame or print-only parsing)
+- ✅ pandas-safe HTML builder (no DataFrame.applymap)
+
+Important notes:
+- "Account value" here is estimated as sum(option_mark * 100 * contracts) from positions.csv.
+- Pyramiding uses a per-run budget slice to avoid overleveraging.
+
+Env vars (optional):
+  PYRAMID_ON=true|false (default true)
+  PYR_L1=0.60  (add eligible at +60%)
+  PYR_L2=1.20  (add eligible at +120%)
+  PYR_ADD_BUDGET_PCT=0.05 (5% of account value per run max spend on adds)
+  PYR_REQUIRE_BOTH=true|false (default true)  # require 5D AND 10D intact
+  PYR_MAX_ADDS_PER_RUN=99 (default 99)        # safety
+
+Existing env vars still supported:
+  MAX_NEW_PER_RUN, MAX_CONTRACTS_PER_POSITION, CONTRACT_MULTIPLIER, CASH_BUFFER_PCT, ATR_PERIOD, ATR_MULTIPLIER, STRUCTURE_10, STRUCTURE_5, RECO_MODE
+  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO, EMAIL_MODE
 """
 
 import os
@@ -123,6 +143,14 @@ ATR_CLOSE = env_float("ATR_CLOSE", 0.50)
 OVERSIZE_MULT = env_float("OVERSIZE_MULT", 1.40)
 TRIM_TO_SLOT = env_str("TRIM_TO_SLOT", "true").lower() == "true"
 
+# Pyramiding config
+PYRAMID_ON = env_str("PYRAMID_ON", "true").lower() == "true"
+PYR_L1 = env_float("PYR_L1", 0.60)   # +60% option return
+PYR_L2 = env_float("PYR_L2", 1.20)   # +120% option return
+PYR_ADD_BUDGET_PCT = env_float("PYR_ADD_BUDGET_PCT", 0.05)  # 5% of total value/run
+PYR_REQUIRE_BOTH = env_str("PYR_REQUIRE_BOTH", "true").lower() == "true"
+PYR_MAX_ADDS_PER_RUN = env_int("PYR_MAX_ADDS_PER_RUN", 99)
+
 # Email env
 SMTP_HOST = env_str("SMTP_HOST", "")
 SMTP_PORT = env_int("SMTP_PORT", 0)
@@ -162,7 +190,7 @@ def send_email(subject: str, text_body: str, html_body: str) -> None:
 
 
 # =========================
-# HTML TABLE BUILDER
+# HTML TABLE BUILDER (pandas-safe)
 # =========================
 def html_escape(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -351,7 +379,7 @@ def fetch_option_quote_from_name(option_name: str) -> Dict[str, Any]:
 
 
 # =========================
-# ENTRY SCAN IMPORT (TotalNarrow)
+# ENTRY SCAN IMPORT (TotalNarrow): DF return OR print-only
 # =========================
 _BULLET_HEAD_RE = re.compile(r"^[•\-\*]\s*([A-Z]{1,6})\s+—\s+([A-Z_]+)", re.UNICODE)
 _OPTION_LINE_RE = re.compile(
@@ -360,10 +388,6 @@ _OPTION_LINE_RE = re.compile(
 )
 
 def parse_scanner_stdout_to_df(text: str) -> pd.DataFrame:
-    """
-    Parses the bullet output you pasted into a DataFrame with:
-      Ticker, Action, Expiry, OptionSymbol, OptionLast
-    """
     if not text or not text.strip():
         return pd.DataFrame()
 
@@ -384,19 +408,12 @@ def parse_scanner_stdout_to_df(text: str) -> pd.DataFrame:
 
         m2 = _OPTION_LINE_RE.search(line)
         if m2 and cur.get("Ticker"):
-            opt_type = m2.group(1).upper()
-            strike = m2.group(2)
-            expiry = m2.group(3)
-            sym = m2.group(4)
-            last = m2.group(5)
-            cur["Expiry"] = expiry
-            cur["OptionSymbol"] = sym
+            cur["Expiry"] = m2.group(3)
+            cur["OptionSymbol"] = m2.group(4)
             try:
-                cur["OptionLast"] = float(last)
+                cur["OptionLast"] = float(m2.group(5))
             except Exception:
                 cur["OptionLast"] = np.nan
-            cur["OptType"] = opt_type
-            cur["Strike"] = strike
             continue
 
     if cur.get("Ticker"):
@@ -406,7 +423,6 @@ def parse_scanner_stdout_to_df(text: str) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Ensure required columns exist
     for c in ["Ticker", "Action", "Expiry", "OptionSymbol", "OptionLast"]:
         if c not in df.columns:
             df[c] = ""
@@ -415,37 +431,29 @@ def parse_scanner_stdout_to_df(text: str) -> pd.DataFrame:
     return df
 
 def run_entry_scan(report_lines: List[str]) -> pd.DataFrame:
-    """
-    Tries DataFrame-returning scanner first.
-    If scanner prints only, capture stdout and parse it.
-    """
     try:
         import TotalNarrow as scan
     except Exception as e:
         report_lines.append(f"DIAG: Failed to import TotalNarrow.py: {e}")
         return pd.DataFrame()
 
-    # 1) Try DataFrame return
     if hasattr(scan, "generate_new_entries"):
         try:
             df = scan.generate_new_entries()
             if isinstance(df, pd.DataFrame) and not df.empty:
-                report_lines.append(f"DIAG: Scanner returned DataFrame rows={len(df)} cols={list(df.columns)}")
+                report_lines.append(f"DIAG: Scanner returned DF rows={len(df)} cols={list(df.columns)}")
                 return df
         except Exception as e:
             report_lines.append(f"DIAG: Scanner generate_new_entries() exception: {e}")
 
-    # 2) Capture printed output and parse
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
-            # try common entrypoints
             if hasattr(scan, "main") and callable(scan.main):
                 scan.main()
             elif hasattr(scan, "run") and callable(scan.run):
                 scan.run()
             elif hasattr(scan, "generate_new_entries") and callable(scan.generate_new_entries):
-                # call again to trigger prints even if it returns None
                 scan.generate_new_entries()
     except Exception as e:
         report_lines.append(f"DIAG: Scanner stdout-capture run exception: {e}")
@@ -454,16 +462,14 @@ def run_entry_scan(report_lines: List[str]) -> pd.DataFrame:
     if out.strip():
         parsed = parse_scanner_stdout_to_df(out)
         report_lines.append(f"DIAG: Parsed scanner stdout rows={len(parsed)}")
-        if not parsed.empty:
-            report_lines.append("DIAG: Parsed head:\n" + parsed.head(5).to_string(index=False))
         return parsed
 
-    report_lines.append("DIAG: Scanner produced no DataFrame and no stdout output.")
+    report_lines.append("DIAG: Scanner produced no DF and no stdout.")
     return pd.DataFrame()
 
 
 # =========================
-# OPT LOGIC
+# OPT / PYRAMID LOGIC
 # =========================
 def decide_sell_count(contracts: int, broken10: bool, broken5: bool) -> int:
     if contracts <= 0:
@@ -498,6 +504,51 @@ def estimate_cost_from_entry_row(r: pd.Series) -> float:
             continue
     return float("inf")
 
+def compute_option_return(entry_price: Optional[float], mark: Optional[float]) -> Optional[float]:
+    if entry_price is None or mark is None:
+        return None
+    if not np.isfinite(entry_price) or not np.isfinite(mark) or entry_price <= 0:
+        return None
+    return (mark / entry_price) - 1.0
+
+def choose_add_contracts(
+    contracts: int,
+    opt_ret: Optional[float],
+    trend10_intact: bool,
+    trend5_intact: bool,
+    atr_ok: bool,
+    will_sell_any: bool,
+) -> Tuple[int, str]:
+    if not PYRAMID_ON:
+        return 0, "Pyramiding off"
+    if will_sell_any:
+        return 0, "Selling/Trimming takes priority"
+    if contracts <= 0:
+        return 0, "No position"
+    if contracts >= MAX_CONTRACTS_PER_POSITION:
+        return 0, "At max contracts cap"
+    if opt_ret is None:
+        return 0, "No option return calc"
+    if atr_ok is False:
+        return 0, "ATR not OK"
+    if PYR_REQUIRE_BOTH:
+        if not (trend10_intact and trend5_intact):
+            return 0, "Trend not intact (need 10D+5D)"
+    else:
+        if not trend10_intact:
+            return 0, "Trend not intact (need 10D)"
+
+    # Small-account friendly add sizing
+    add_n = 1  # default add 1 contract
+
+    # Trigger levels
+    if opt_ret >= PYR_L2:
+        return add_n, f"Winner {opt_ret*100:.0f}% ≥ {PYR_L2*100:.0f}% + trend intact + ATR OK"
+    if opt_ret >= PYR_L1:
+        return add_n, f"Winner {opt_ret*100:.0f}% ≥ {PYR_L1*100:.0f}% + trend intact + ATR OK"
+
+    return 0, "Below pyramid thresholds"
+
 
 # =========================
 # MAIN
@@ -525,6 +576,8 @@ def main():
     enriched["sell_count_exit"] = 0
     enriched["sell_count_opt"] = 0
     enriched["sell_count_final"] = 0
+    enriched["add_contracts"] = 0
+    enriched["pyramid_reason"] = pd.Series([""] * len(enriched), dtype="object")
     enriched["option_src"] = pd.Series([None] * len(enriched), dtype="object")
     enriched["recommendation_final"] = pd.Series(["HOLD"] * len(enriched), dtype="object")
 
@@ -537,6 +590,7 @@ def main():
         option_name = str(row["option_name"]).strip()
         entry_under = to_float(row["underlying_entry_price"])
         contracts = to_int(row.get("contracts", 1), 1)
+        entry_opt = to_float(row.get("option_entry_price"))
 
         oq = fetch_option_quote_from_name(option_name)
         option_mark = None
@@ -545,7 +599,7 @@ def main():
             option_mark = float(oq["price"])
             option_src = str(oq.get("source", ""))
         else:
-            option_mark = to_float(row.get("option_entry_price"))
+            option_mark = entry_opt
             option_src = f"fallback_entry_price({oq.get('reason')})"
 
         pos_value = option_position_value(option_mark, contracts)
@@ -606,37 +660,49 @@ def main():
             broken10_cur = bool(current_price > high10)
             broken5_cur = bool(current_price > high5)
 
-        adv_u, dist_u, dist_u_atr, _ = atr_advice(is_call, current_price, atr_stop, atr)
+        trend10_intact = not broken10_cur
+        trend5_intact = not broken5_cur
 
+        adv_u, dist_u, dist_u_atr, stop_hit = atr_advice(is_call, current_price, atr_stop, atr)
+        atr_ok = (adv_u == "OK") and (stop_hit is False)
+
+        # exits first
         sell_exit = decide_sell_count(contracts, broken10_cur, broken5_cur)
         enriched.at[i, "sell_count_exit"] = sell_exit
         if sell_exit > 0:
             any_action = True
 
+        opt_ret = compute_option_return(entry_opt, option_mark)
+
         report_lines.append(
             f"""Ticker: {ticker} ({direction})
 Option: {option_name}
 Contracts: {contracts}
-Option Mark: {option_mark if option_mark is not None else ''} (src: {option_src})
-Position Value: {pos_value:.2f}
+Option Entry: {entry_opt if entry_opt is not None else ''} | Mark: {option_mark if option_mark is not None else ''} (src: {option_src})
+Option Return: {opt_ret*100:.1f}%""" + ("" if opt_ret is not None else "") + f"""
 
 Underlying Entry: {entry_under:.2f}
 Current: {current_price:.2f} (src: {current_src})
 
 ATR({ATR_PERIOD}): {atr:.2f}
 ATR Stop ({ATR_MULTIPLIER}x): {atr_stop:.2f}
+ATR advice (CURRENT): {adv_u} dist {dist_u:+.2f} ({dist_u_atr:+.2f} ATR)
 
-ATR advice (CURRENT):
-{adv_u} dist {dist_u:+.2f} ({dist_u_atr:+.2f} ATR)
-
-EXIT RECOMMENDATION (CURRENT): {label_sell(sell_exit, contracts)}
+Trend (CURRENT): 10D={'INTACT' if trend10_intact else 'BROKEN'} | 5D={'INTACT' if trend5_intact else 'BROKEN'}
+Exit recommendation: {label_sell(sell_exit, contracts)}
 """
         )
 
-    # Oversize trim (kept; independent)
-    usable_value = total_value * (1.0 - CASH_BUFFER_PCT)
-    avg_pos_budget = usable_value / max(len(enriched), 1) if usable_value > 0 else 0.0
+        # Store intermediate for pyramiding decision (we decide adds after we know total_value & budget)
+        enriched.at[i, "_trend10_intact"] = trend10_intact
+        enriched.at[i, "_trend5_intact"] = trend5_intact
+        enriched.at[i, "_atr_ok"] = atr_ok
+        enriched.at[i, "_opt_ret"] = opt_ret if opt_ret is not None else np.nan
 
+    # Oversize trim (kept)
+    usable_value = total_value * (1.0 - CASH_BUFFER_PCT)
+
+    avg_pos_budget = usable_value / max(len(enriched), 1) if usable_value > 0 else 0.0
     if TRIM_TO_SLOT and avg_pos_budget > 0:
         for i, row in enriched.iterrows():
             contracts = to_int(row.get("contracts", 1), 1)
@@ -671,94 +737,153 @@ EXIT RECOMMENDATION (CURRENT): {label_sell(sell_exit, contracts)}
         if option_mark is not None and np.isfinite(option_mark) and s_final > 0:
             freed_cash += option_mark * CONTRACT_MULTIPLIER * s_final
 
-    def will_be_open(r: pd.Series) -> bool:
-        c = to_int(r.get("contracts", 1), 1)
-        s = to_int(r.get("sell_count_final", 0), 0)
-        return (c - s) > 0
+    # =========================
+    # PYRAMIDING (adds) — after sells decided
+    # =========================
+    pyramid_budget = usable_value * PYR_ADD_BUDGET_PCT
+    pyramid_spend = 0.0
+    adds_used = 0
 
-    open_positions = enriched[enriched.apply(will_be_open, axis=1)]
-    open_tickers = set(open_positions["ticker"].astype(str).str.upper().str.strip().tolist())
+    for i, row in enriched.iterrows():
+        if adds_used >= PYR_MAX_ADDS_PER_RUN:
+            break
 
-    # ---- Scanner + buys (freed_cash ONLY; unlimited slots)
+        contracts = to_int(row.get("contracts", 1), 1)
+        sell_final = to_int(row.get("sell_count_final", 0), 0)
+        will_sell_any = sell_final > 0
+
+        option_mark = to_float(row.get("option_mark", np.nan))
+        if option_mark is None or not np.isfinite(option_mark) or option_mark <= 0:
+            enriched.at[i, "add_contracts"] = 0
+            enriched.at[i, "pyramid_reason"] = "No mark price"
+            continue
+
+        trend10_intact = bool(row.get("_trend10_intact", True))
+        trend5_intact = bool(row.get("_trend5_intact", True))
+        atr_ok = bool(row.get("_atr_ok", False))
+
+        opt_ret_val = row.get("_opt_ret", np.nan)
+        opt_ret = None if (opt_ret_val is None or pd.isna(opt_ret_val)) else float(opt_ret_val)
+
+        add_n, reason = choose_add_contracts(
+            contracts=contracts,
+            opt_ret=opt_ret,
+            trend10_intact=trend10_intact,
+            trend5_intact=trend5_intact,
+            atr_ok=atr_ok,
+            will_sell_any=will_sell_any,
+        )
+
+        if add_n <= 0:
+            enriched.at[i, "add_contracts"] = 0
+            enriched.at[i, "pyramid_reason"] = reason
+            continue
+
+        # Funding check (pyramid budget only)
+        cost_add = option_mark * CONTRACT_MULTIPLIER * add_n
+        if (pyramid_spend + cost_add) > pyramid_budget:
+            enriched.at[i, "add_contracts"] = 0
+            enriched.at[i, "pyramid_reason"] = f"No pyramid budget (need {money2(cost_add)}, left {money2(pyramid_budget - pyramid_spend)})"
+            continue
+
+        # Respect max contracts cap
+        if contracts + add_n > MAX_CONTRACTS_PER_POSITION:
+            add_n = max(0, MAX_CONTRACTS_PER_POSITION - contracts)
+
+        if add_n <= 0:
+            enriched.at[i, "add_contracts"] = 0
+            enriched.at[i, "pyramid_reason"] = "At max contracts cap"
+            continue
+
+        pyramid_spend += option_mark * CONTRACT_MULTIPLIER * add_n
+        adds_used += 1
+        any_action = True
+
+        enriched.at[i, "add_contracts"] = add_n
+        enriched.at[i, "pyramid_reason"] = reason
+
+    report_lines.append(f"DIAG: usable_value={usable_value:.2f} pyramid_budget={pyramid_budget:.2f} pyramid_spend={pyramid_spend:.2f} adds_used={adds_used}")
+
+    # ---- Scanner + buys (still funded by freed cash only)
     report_lines.append(f"DIAG: freed_cash={freed_cash:.2f}")
     entries = run_entry_scan(report_lines)
 
     report_lines.append(f"DIAG: scanner_rows={len(entries)}")
     report_lines.append(f"DIAG: scanner_cols={list(entries.columns) if entries is not None else []}")
 
+    open_positions = enriched[enriched.apply(lambda r: (to_int(r.get("contracts", 1), 1) - to_int(r.get("sell_count_final", 0), 0)) > 0, axis=1)]
+    open_tickers = set(open_positions["ticker"].astype(str).str.upper().str.strip().tolist())
+
     buy_rows: List[Dict[str, Any]] = []
+    if freed_cash > 0 and entries is not None and not entries.empty and "Ticker" in entries.columns:
+        cand = entries.copy()
+        cand["Ticker"] = cand["Ticker"].astype(str).str.upper().str.strip()
+        cand = cand[~cand["Ticker"].isin(open_tickers)].copy()
 
-    if freed_cash > 0 and entries is not None and not entries.empty:
-        if "Ticker" not in entries.columns:
-            report_lines.append("DIAG: Scanner missing 'Ticker' column -> cannot buy.")
-        else:
-            cand = entries.copy()
-            cand["Ticker"] = cand["Ticker"].astype(str).str.upper().str.strip()
-            cand = cand[~cand["Ticker"].isin(open_tickers)].copy()
+        cand["EstCost1"] = cand.apply(estimate_cost_from_entry_row, axis=1)
+        cand = cand.replace([np.inf, -np.inf], np.nan).dropna(subset=["EstCost1"])
+        cand = cand.sort_values(["EstCost1", "Ticker"])
 
-            report_lines.append(f"DIAG: candidates_after_open_filter={len(cand)}")
+        cash_left = freed_cash
+        adds = 0
+        for _, r in cand.iterrows():
+            if adds >= MAX_NEW_PER_RUN:
+                break
+            est1 = float(r["EstCost1"])
+            if not np.isfinite(est1) or est1 <= 0:
+                continue
+            max_by_cash = int(cash_left // est1)
+            buy_n = max(0, min(max_by_cash, MAX_CONTRACTS_PER_POSITION))
+            if buy_n <= 0:
+                continue
+            ticker = str(r["Ticker"]).upper()
+            cash_left -= buy_n * est1
+            adds += 1
+            buy_rows.append({
+                "Type": "BUY",
+                "Ticker": ticker,
+                "Strategy": str(r.get("Action", "")),
+                "Expiry": str(r.get("Expiry", "")),
+                "OptionSymbol": str(r.get("OptionSymbol", "")),
+                "OptionLast": num(r.get("OptionLast", ""), 2),
+                "BuyContracts": buy_n,
+                "EstCostTotal": round(buy_n * est1, 2),
+                "Reason": "New entry funded by freed cash (from sells)",
+            })
 
-            cand["EstCost1"] = cand.apply(estimate_cost_from_entry_row, axis=1)
-            cand = cand.replace([np.inf, -np.inf], np.nan).dropna(subset=["EstCost1"])
-            report_lines.append(f"DIAG: candidates_after_price_filter={len(cand)}")
-
-            cand = cand.sort_values(["EstCost1", "Ticker"])
-
-            cash_left = freed_cash
-            adds = 0
-
-            for _, r in cand.iterrows():
-                if adds >= MAX_NEW_PER_RUN:
-                    break
-
-                est1 = float(r["EstCost1"])
-                if not np.isfinite(est1) or est1 <= 0:
-                    continue
-
-                max_by_cash = int(cash_left // est1)
-                buy_n = max(0, min(max_by_cash, MAX_CONTRACTS_PER_POSITION))
-                if buy_n <= 0:
-                    continue
-
-                ticker = str(r["Ticker"]).upper()
-                cash_left -= buy_n * est1
-                adds += 1
-                open_tickers.add(ticker)
-
-                buy_rows.append({
-                    "Type": "BUY",
-                    "Ticker": ticker,
-                    "Strategy": str(r.get("Action", "")),
-                    "Expiry": str(r.get("Expiry", "")),
-                    "OptionSymbol": str(r.get("OptionSymbol", "")),
-                    "OptionLast": num(r.get("OptionLast", ""), 2),
-                    "BuyContracts": buy_n,
-                    "EstCostTotal": round(buy_n * est1, 2),
-                    "Reason": "New entry funded by freed cash (from sells)",
-                })
-
-            report_lines.append(f"DIAG: buys_added={len(buy_rows)} cash_left={cash_left:.2f}")
+        report_lines.append(f"DIAG: buys_added={len(buy_rows)} cash_left={cash_left:.2f}")
 
     # ---- Plan DF (saved)
     plan_rows: List[Dict[str, Any]] = []
+
     for _, r in enriched.iterrows():
         ticker = str(r.get("ticker", "")).strip().upper()
         option_name = str(r.get("option_name", "")).strip()
         held = to_int(r.get("contracts", 1), 1)
         sell_n = to_int(r.get("sell_count_final", 0), 0)
+        add_n = to_int(r.get("add_contracts", 0), 0)
         if held <= 0:
             continue
+
+        action_type = "SELL" if sell_n > 0 else ("ADD" if add_n > 0 else "HOLD")
+        reco = str(r.get("recommendation_final", "HOLD"))
+        if add_n > 0 and sell_n == 0:
+            reco = f"ADD_{add_n}"
+
         plan_rows.append({
-            "Type": "SELL" if sell_n > 0 else "HOLD",
+            "Type": action_type,
             "Ticker": ticker,
             "Option": option_name,
             "ContractsHeld": held,
             "SellContracts": sell_n,
-            "Recommendation": str(r.get("recommendation_final", "HOLD")),
+            "AddContracts": add_n,
+            "Recommendation": reco,
             "PositionValue": round(float(r.get("pos_value", 0.0) or 0.0), 2),
             "OptionMark": "" if pd.isna(r.get("option_mark")) else float(r.get("option_mark")),
-            "Reason": ("Structure/Trim" if sell_n > 0 else "No action"),
+            "Reason": ("Structure/Trim" if sell_n > 0 else ("Pyramiding" if add_n > 0 else "No action")),
+            "PyramidReason": str(r.get("pyramid_reason", "")),
         })
+
     plan_rows.extend(buy_rows)
     plan_df = pd.DataFrame(plan_rows)
     plan_df.to_csv(PLAN_FILE, index=False)
@@ -766,7 +891,11 @@ EXIT RECOMMENDATION (CURRENT): {label_sell(sell_exit, contracts)}
     # ---- Plain text body (fallback)
     header_txt = []
     header_txt.append(f"PORTFOLIO MANAGER — {datetime.now().strftime('%Y-%m-%d')}")
-    header_txt.append(f"Total: {money2(total_value)} | Usable: {money2(usable_value)} | Freed: {money2(freed_cash)} | NewBuys: {len(buy_rows)}")
+    header_txt.append(
+        f"Total: {money2(total_value)} | Usable: {money2(usable_value)} | "
+        f"Freed: {money2(freed_cash)} | PyramidBudget: {money2(pyramid_budget)} | PyramidSpend: {money2(pyramid_spend)} | "
+        f"Adds: {adds_used} | NewBuys: {len(buy_rows)}"
+    )
     header_txt.append("Scanner: TotalNarrow.py")
     header_txt.append(f"Plan saved: {PLAN_FILE}")
     header_txt.append("")
@@ -774,8 +903,9 @@ EXIT RECOMMENDATION (CURRENT): {label_sell(sell_exit, contracts)}
     text_body = "\n".join(header_txt) + "\nDETAILS\n=======\n" + body_details
 
     # ---- HTML body tables
-    existing_df = plan_df[plan_df["Type"].isin(["SELL", "HOLD"])][
-        ["Type", "Ticker", "Option", "ContractsHeld", "SellContracts", "Recommendation", "PositionValue", "OptionMark", "Reason"]
+    existing_df = plan_df[plan_df["Type"].isin(["SELL", "HOLD", "ADD"])][
+        ["Type", "Ticker", "Option", "ContractsHeld", "SellContracts", "AddContracts",
+         "Recommendation", "PositionValue", "OptionMark", "Reason", "PyramidReason"]
     ].copy()
 
     if not existing_df.empty:
@@ -794,11 +924,14 @@ EXIT RECOMMENDATION (CURRENT): {label_sell(sell_exit, contracts)}
       <div style="margin:0 0 12px; font-size:14px;">
         <b>Total:</b> {money2(total_value)} &nbsp;·&nbsp;
         <b>Usable:</b> {money2(usable_value)} &nbsp;·&nbsp;
-        <b>Freed (for buys):</b> {money2(freed_cash)} &nbsp;·&nbsp;
+        <b>Freed:</b> {money2(freed_cash)} &nbsp;·&nbsp;
+        <b>Pyramid budget:</b> {money2(pyramid_budget)} &nbsp;·&nbsp;
+        <b>Pyramid spend:</b> {money2(pyramid_spend)} &nbsp;·&nbsp;
+        <b>Adds:</b> {adds_used} &nbsp;·&nbsp;
         <b>New buys:</b> {len(buy_rows)}
       </div>
 
-      {df_to_html_table(existing_df, "Existing Positions — Action Plan")}
+      {df_to_html_table(existing_df, "Existing Positions — Action Plan (includes pyramiding)")}
       {df_to_html_table(buy_df, "New Entries — Action Plan")}
 
       <details style="margin-top:14px;">
@@ -814,7 +947,7 @@ EXIT RECOMMENDATION (CURRENT): {label_sell(sell_exit, contracts)}
     </div>
     """
 
-    subject = "🚨 Portfolio Plan – Action Needed" if (any_action or len(buy_rows) > 0) else "✅ Portfolio Plan – No Action"
+    subject = "🚨 Portfolio Plan – Action Needed" if (any_action or len(buy_rows) > 0 or adds_used > 0) else "✅ Portfolio Plan – No Action"
 
     if smtp_ready():
         if EMAIL_MODE == "action_only" and subject.startswith("✅"):
