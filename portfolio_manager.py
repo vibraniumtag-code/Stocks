@@ -1,35 +1,22 @@
 #!/usr/bin/env python3
 """
-portfolio_manager.py  (FULL SCRIPT — HTML email tables + plain-text fallback)
-UPDATED: Unlimited positions; NEW BUYS limited by FREED CASH ONLY (no MAX_POSITIONS / slot budget cap)
+portfolio_manager.py (FULL SCRIPT — HTML email tables + plain-text fallback)
+UPDATED: Unlimited positions; NEW BUYS limited by FREED CASH ONLY (no MAX_POSITIONS cap)
 
-Fixes & features included:
-- ✅ HTML email tables (nice table view) + plain text fallback
-- ✅ Works on newer pandas where DataFrame.applymap() is removed
-- ✅ Keeps your current positions.csv format (no changes required)
-- ✅ Scanner import name: TotalNarrow.py
-- ✅ Robust env parsing (no int('') / float('') crashes)
-- ✅ Avoids pandas strict string dtype issues by using object dtype for mixed cols
-- ✅ Saves portfolio_plan.csv in repo workspace
-- ✅ NEW: Buys are funded ONLY by freed_cash from planned sells (unlimited slots)
-- ✅ NEW: Better scanner cost estimation supports OptionLast / OptionMid / OptionPrice fallbacks
-- ✅ NEW: Clear diagnostics in email details for freed_cash + scanner status
-
-Required positions.csv columns:
-  ticker, option_name, option_entry_price, underlying_entry_price
-Optional:
-  contracts (defaults to 1)
-
-Email env vars (GitHub secrets):
-  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
-Optional:
-  EMAIL_MODE = always | action_only
+NEW in this version:
+- ✅ Entry scanner can be either:
+  (A) DataFrame-returning generate_new_entries()  OR
+  (B) print-only output (bullets) -> captured + parsed into a DataFrame
+- ✅ Buys funded ONLY by freed_cash from planned sells (unlimited slots)
+- ✅ Diagnostics show freed_cash + scanner rows/cols
 """
 
 import os
 import re
 import ssl
 import smtplib
+import io
+import contextlib
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, List
 
@@ -113,17 +100,15 @@ def num(x, n=2) -> str:
 
 
 # =========================
-# CONFIG (safe)
+# CONFIG
 # =========================
 CSV_FILE = env_str("CSV_FILE", "positions.csv")
 PLAN_FILE = env_str("PLAN_FILE", "portfolio_plan.csv")
 
-# Buys-per-run + sizing caps (still respected)
 MAX_NEW_PER_RUN = env_int("MAX_NEW_PER_RUN", 2)
 MAX_CONTRACTS_PER_POSITION = env_int("MAX_CONTRACTS_PER_POSITION", 6)
 CONTRACT_MULTIPLIER = env_int("CONTRACT_MULTIPLIER", 100)
 
-# Keep cash buffer only for reporting (does not cap buys now)
 CASH_BUFFER_PCT = env_float("CASH_BUFFER_PCT", 0.05)
 
 ATR_PERIOD = env_int("ATR_PERIOD", 14)
@@ -177,7 +162,7 @@ def send_email(subject: str, text_body: str, html_body: str) -> None:
 
 
 # =========================
-# HTML TABLE BUILDER (pandas-safe, no applymap)
+# HTML TABLE BUILDER
 # =========================
 def html_escape(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -188,7 +173,6 @@ def df_to_html_table(df: pd.DataFrame, title: str) -> str:
 
     safe = df.copy().fillna("")
     safe = safe.astype(str)
-    # pandas-3-safe: apply + map instead of applymap
     safe = safe.apply(lambda col: col.map(html_escape))
 
     ths = "".join(
@@ -247,7 +231,6 @@ def calculate_atr(df: pd.DataFrame, period: int) -> pd.Series:
     return tr.rolling(period).mean()
 
 def prior_window(df_completed: pd.DataFrame, n: int) -> pd.DataFrame:
-    # prior N completed bars, excluding the most recent completed bar
     return df_completed.iloc[-(n + 1):-1]
 
 def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
@@ -362,16 +345,7 @@ def fetch_option_quote_from_name(option_name: str) -> Dict[str, Any]:
         if price is None:
             return {"ok": False, "reason": "no_price"}
 
-        return {
-            "ok": True,
-            "ticker": ticker,
-            "expiry": expiry,
-            "opt_type": opt_type,
-            "strike": strike,
-            "price": price,
-            "source": src,
-            "contractSymbol": row.get("contractSymbol", ""),
-        }
+        return {"ok": True, "price": price, "source": src}
     except Exception:
         return {"ok": False, "reason": "exception"}
 
@@ -379,18 +353,112 @@ def fetch_option_quote_from_name(option_name: str) -> Dict[str, Any]:
 # =========================
 # ENTRY SCAN IMPORT (TotalNarrow)
 # =========================
-def run_entry_scan() -> pd.DataFrame:
-    try:
-        import TotalNarrow as scan
-    except Exception:
+_BULLET_HEAD_RE = re.compile(r"^[•\-\*]\s*([A-Z]{1,6})\s+—\s+([A-Z_]+)", re.UNICODE)
+_OPTION_LINE_RE = re.compile(
+    r"Option:\s*(CALL|PUT)\s+([\d\.]+)\s+exp\s+(\d{4}-\d{2}-\d{2})\s+\[([A-Z0-9]+)\]\s+@\s+last\s+([\d\.]+)",
+    re.IGNORECASE
+)
+
+def parse_scanner_stdout_to_df(text: str) -> pd.DataFrame:
+    """
+    Parses the bullet output you pasted into a DataFrame with:
+      Ticker, Action, Expiry, OptionSymbol, OptionLast
+    """
+    if not text or not text.strip():
         return pd.DataFrame()
 
+    rows: List[Dict[str, Any]] = []
+    cur: Dict[str, Any] = {}
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+
+        m1 = _BULLET_HEAD_RE.match(line)
+        if m1:
+            if cur.get("Ticker"):
+                rows.append(cur)
+            cur = {"Ticker": m1.group(1).upper(), "Action": m1.group(2).upper()}
+            continue
+
+        m2 = _OPTION_LINE_RE.search(line)
+        if m2 and cur.get("Ticker"):
+            opt_type = m2.group(1).upper()
+            strike = m2.group(2)
+            expiry = m2.group(3)
+            sym = m2.group(4)
+            last = m2.group(5)
+            cur["Expiry"] = expiry
+            cur["OptionSymbol"] = sym
+            try:
+                cur["OptionLast"] = float(last)
+            except Exception:
+                cur["OptionLast"] = np.nan
+            cur["OptType"] = opt_type
+            cur["Strike"] = strike
+            continue
+
+    if cur.get("Ticker"):
+        rows.append(cur)
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    # Ensure required columns exist
+    for c in ["Ticker", "Action", "Expiry", "OptionSymbol", "OptionLast"]:
+        if c not in df.columns:
+            df[c] = ""
+
+    df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
+    return df
+
+def run_entry_scan(report_lines: List[str]) -> pd.DataFrame:
+    """
+    Tries DataFrame-returning scanner first.
+    If scanner prints only, capture stdout and parse it.
+    """
+    try:
+        import TotalNarrow as scan
+    except Exception as e:
+        report_lines.append(f"DIAG: Failed to import TotalNarrow.py: {e}")
+        return pd.DataFrame()
+
+    # 1) Try DataFrame return
     if hasattr(scan, "generate_new_entries"):
         try:
-            return scan.generate_new_entries()
-        except Exception:
-            return pd.DataFrame()
+            df = scan.generate_new_entries()
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                report_lines.append(f"DIAG: Scanner returned DataFrame rows={len(df)} cols={list(df.columns)}")
+                return df
+        except Exception as e:
+            report_lines.append(f"DIAG: Scanner generate_new_entries() exception: {e}")
 
+    # 2) Capture printed output and parse
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            # try common entrypoints
+            if hasattr(scan, "main") and callable(scan.main):
+                scan.main()
+            elif hasattr(scan, "run") and callable(scan.run):
+                scan.run()
+            elif hasattr(scan, "generate_new_entries") and callable(scan.generate_new_entries):
+                # call again to trigger prints even if it returns None
+                scan.generate_new_entries()
+    except Exception as e:
+        report_lines.append(f"DIAG: Scanner stdout-capture run exception: {e}")
+
+    out = buf.getvalue()
+    if out.strip():
+        parsed = parse_scanner_stdout_to_df(out)
+        report_lines.append(f"DIAG: Parsed scanner stdout rows={len(parsed)}")
+        if not parsed.empty:
+            report_lines.append("DIAG: Parsed head:\n" + parsed.head(5).to_string(index=False))
+        return parsed
+
+    report_lines.append("DIAG: Scanner produced no DataFrame and no stdout output.")
     return pd.DataFrame()
 
 
@@ -421,10 +489,6 @@ def option_position_value(option_price: Optional[float], contracts: int) -> floa
     return float(option_price) * CONTRACT_MULTIPLIER * contracts
 
 def estimate_cost_from_entry_row(r: pd.Series) -> float:
-    """
-    Try multiple column names from the scanner.
-    Uses first valid positive price found.
-    """
     for col in ("OptionLast", "OptionMid", "OptionPrice", "Mid", "Last"):
         try:
             p = float(r.get(col, ""))
@@ -455,7 +519,6 @@ def main():
     report_lines: List[str] = []
     any_action = False
 
-    # Mixed dtypes must be object to avoid pandas strict dtype issues
     enriched = positions.copy()
     enriched["option_mark"] = np.nan
     enriched["pos_value"] = 0.0
@@ -536,32 +599,16 @@ def main():
 
         if is_call:
             atr_stop = float(entry_under - ATR_MULTIPLIER * atr)
-            broken10_close = bool(close_price < low10)
-            broken5_close = bool(close_price < low5)
             broken10_cur = bool(current_price < low10)
             broken5_cur = bool(current_price < low5)
         else:
             atr_stop = float(entry_under + ATR_MULTIPLIER * atr)
-            broken10_close = bool(close_price > high10)
-            broken5_close = bool(close_price > high5)
             broken10_cur = bool(current_price > high10)
             broken5_cur = bool(current_price > high5)
 
-        action10_close, trend10_close = action_and_trend(broken10_close)
-        action5_close, trend5_close = action_and_trend(broken5_close)
-        action10_cur, trend10_cur = action_and_trend(broken10_cur)
-        action5_cur, trend5_cur = action_and_trend(broken5_cur)
-
-        adv_c, dist_c, dist_c_atr, _ = atr_advice(is_call, close_price, atr_stop, atr)
         adv_u, dist_u, dist_u_atr, _ = atr_advice(is_call, current_price, atr_stop, atr)
 
-        if RECO_MODE == "close":
-            sell_exit = decide_sell_count(contracts, broken10_close, broken5_close)
-            reco_basis = "CLOSE"
-        else:
-            sell_exit = decide_sell_count(contracts, broken10_cur, broken5_cur)
-            reco_basis = "CURRENT"
-
+        sell_exit = decide_sell_count(contracts, broken10_cur, broken5_cur)
         enriched.at[i, "sell_count_exit"] = sell_exit
         if sell_exit > 0:
             any_action = True
@@ -574,34 +621,19 @@ Option Mark: {option_mark if option_mark is not None else ''} (src: {option_src}
 Position Value: {pos_value:.2f}
 
 Underlying Entry: {entry_under:.2f}
-Close: {close_price:.2f}
 Current: {current_price:.2f} (src: {current_src})
 
 ATR({ATR_PERIOD}): {atr:.2f}
 ATR Stop ({ATR_MULTIPLIER}x): {atr_stop:.2f}
 
-ATR advice:
-CLOSE:   {adv_c} dist {dist_c:+.2f} ({dist_c_atr:+.2f} ATR)
-CURRENT: {adv_u} dist {dist_u:+.2f} ({dist_u_atr:+.2f} ATR)
+ATR advice (CURRENT):
+{adv_u} dist {dist_u:+.2f} ({dist_u_atr:+.2f} ATR)
 
-=== Based on CLOSE price ===
-10 Days action : {action10_close}
-10 Days trend  : {trend10_close}
-5 Days action  : {action5_close}
-5 Days trend   : {trend5_close}
-
-=== Based on CURRENT price ===
-10 Days action : {action10_cur}
-10 Days trend  : {trend10_cur}
-5 Days action  : {action5_cur}
-5 Days trend   : {trend5_cur}
-
-EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
+EXIT RECOMMENDATION (CURRENT): {label_sell(sell_exit, contracts)}
 """
         )
 
-    # Oversize trim (kept as-is; independent of buys)
-    # Note: Without slot_budget, we approximate "oversize" vs average position size.
+    # Oversize trim (kept; independent)
     usable_value = total_value * (1.0 - CASH_BUFFER_PCT)
     avg_pos_budget = usable_value / max(len(enriched), 1) if usable_value > 0 else 0.0
 
@@ -648,28 +680,28 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
     open_tickers = set(open_positions["ticker"].astype(str).str.upper().str.strip().tolist())
 
     # ---- Scanner + buys (freed_cash ONLY; unlimited slots)
-    entries = run_entry_scan()
-    if entries is None:
-        entries = pd.DataFrame()
+    report_lines.append(f"DIAG: freed_cash={freed_cash:.2f}")
+    entries = run_entry_scan(report_lines)
+
+    report_lines.append(f"DIAG: scanner_rows={len(entries)}")
+    report_lines.append(f"DIAG: scanner_cols={list(entries.columns) if entries is not None else []}")
 
     buy_rows: List[Dict[str, Any]] = []
-    scanner_diag = [
-        f"DIAG: freed_cash={freed_cash:.2f}",
-        f"DIAG: scanner_rows={len(entries) if entries is not None else 0}",
-        f"DIAG: scanner_cols={list(entries.columns) if entries is not None else []}",
-    ]
-    report_lines.extend(scanner_diag)
 
-    if freed_cash > 0 and not entries.empty:
-        cand = entries.copy()
-        if "Ticker" not in cand.columns:
+    if freed_cash > 0 and entries is not None and not entries.empty:
+        if "Ticker" not in entries.columns:
             report_lines.append("DIAG: Scanner missing 'Ticker' column -> cannot buy.")
         else:
+            cand = entries.copy()
             cand["Ticker"] = cand["Ticker"].astype(str).str.upper().str.strip()
             cand = cand[~cand["Ticker"].isin(open_tickers)].copy()
 
+            report_lines.append(f"DIAG: candidates_after_open_filter={len(cand)}")
+
             cand["EstCost1"] = cand.apply(estimate_cost_from_entry_row, axis=1)
             cand = cand.replace([np.inf, -np.inf], np.nan).dropna(subset=["EstCost1"])
+            report_lines.append(f"DIAG: candidates_after_price_filter={len(cand)}")
+
             cand = cand.sort_values(["EstCost1", "Ticker"])
 
             cash_left = freed_cash
@@ -699,11 +731,13 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
                     "Strategy": str(r.get("Action", "")),
                     "Expiry": str(r.get("Expiry", "")),
                     "OptionSymbol": str(r.get("OptionSymbol", "")),
-                    "OptionLast": num(r.get("OptionLast", r.get("OptionMid", r.get("OptionPrice", ""))), 2),
+                    "OptionLast": num(r.get("OptionLast", ""), 2),
                     "BuyContracts": buy_n,
                     "EstCostTotal": round(buy_n * est1, 2),
                     "Reason": "New entry funded by freed cash (from sells)",
                 })
+
+            report_lines.append(f"DIAG: buys_added={len(buy_rows)} cash_left={cash_left:.2f}")
 
     # ---- Plan DF (saved)
     plan_rows: List[Dict[str, Any]] = []
@@ -733,7 +767,7 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
     header_txt = []
     header_txt.append(f"PORTFOLIO MANAGER — {datetime.now().strftime('%Y-%m-%d')}")
     header_txt.append(f"Total: {money2(total_value)} | Usable: {money2(usable_value)} | Freed: {money2(freed_cash)} | NewBuys: {len(buy_rows)}")
-    header_txt.append(f"Scanner: TotalNarrow.py")
+    header_txt.append("Scanner: TotalNarrow.py")
     header_txt.append(f"Plan saved: {PLAN_FILE}")
     header_txt.append("")
     body_details = "\n-------------------------\n".join(report_lines) if report_lines else "No details."
@@ -775,7 +809,7 @@ EXIT RECOMMENDATION ({reco_basis}): {label_sell(sell_exit, contracts)}
       </details>
 
       <div style="margin-top:10px; font-size:12px; color:#666;">
-        Plan file saved in runner as <b>{html_escape(PLAN_FILE)}</b> (upload as artifact to download).
+        Plan file saved in runner as <b>{html_escape(PLAN_FILE)}</b>.
       </div>
     </div>
     """
