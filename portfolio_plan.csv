@@ -1,0 +1,7 @@
+Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
+SELL,NFLX,NFLX 2026-02-20 P 88,4.0,2.0,0.0,SELL_2,1500.0,3.75,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,MSFT,MSFT 2026-02-27 P 460,1.0,1.0,0.0,SELL_ALL,1470.0,14.7,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,WMT,WMT 2026-02-27 C 120,2.0,0.0,0.0,HOLD,650.0,3.25,No action,Below pyramid thresholds,,,,,,
+HOLD,CRM,CRM 2026-02-20 P 230,1.0,0.0,0.0,HOLD,870.0,8.7,No action,"No pyramid budget (need $870.00, left $213.28)",,,,,,
+BUY,KO,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-20,KO260320C00072500,2.30,6.0,1380.0
+BUY,XOM,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-20,XOM260320C00135000,4.52,1.0,452.0
