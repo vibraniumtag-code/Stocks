@@ -105,7 +105,7 @@
       margin-top:12px; display:none;
       border:1px solid var(--border); background: rgba(0,0,0,.18);
       border-radius:12px; padding:10px 12px;
-      white-space:pre-wrap; overflow:auto; max-height:300px;
+      white-space:pre-wrap; overflow:auto; max-height:320px;
       font-size:12.5px; color: rgba(255,255,255,.88);
     }
     pre.err{
@@ -119,7 +119,7 @@
     .overlay{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; padding:18px;
       background: rgba(0,0,0,.55); z-index:50; }
     .modal{
-      width:min(720px,100%);
+      width:min(760px,100%);
       border-radius:16px; border:1px solid var(--border);
       background: rgba(15,23,42,.92); backdrop-filter: blur(10px);
       box-shadow: var(--shadow); overflow:hidden;
@@ -141,8 +141,8 @@
 <body>
   <div class="container">
     <h1>Positions</h1>
-    <div class="sub">Edit inline • Download • Commit to GitHub (writes docs/positions.csv)</div>
-    <div class="version" id="versionBadge">POSITION GUI v2026-01-25-01</div>
+    <div class="sub">Edit inline • Download • Commit to GitHub (writes root <b>positions.csv</b>)</div>
+    <div class="version">POSITION GUI v2026-01-25-ROOTCSV</div>
 
     <div class="panel">
       <div class="toolbar">
@@ -167,7 +167,8 @@
     </div>
 
     <div class="note">
-      If commit fails, the log below will show the real error. If main is protected, set branch to <b>web-edits</b>.
+      If commit fails, the log below will show the real error (401/403/409 etc).
+      If main is protected, set branch to <b>web-edits</b> and commit there.
     </div>
 
     <div id="log" class="log"></div>
@@ -180,7 +181,7 @@
       <div class="mh">
         <div>
           <h2>Commit to GitHub</h2>
-          <div class="note" style="margin:6px 0 0;">Writes <b>docs/positions.csv</b> to vibraniumtag-code/Stocks</div>
+          <div class="note" style="margin:6px 0 0;">Writes <b>positions.csv</b> at the repo root</div>
         </div>
         <button type="button" class="btn" id="closeBtn">✖</button>
       </div>
@@ -191,7 +192,7 @@
         </div>
         <div class="row">
           <div class="field"><label>Branch</label><input id="branch" value="main"></div>
-          <div class="field"><label>Path</label><input id="path" value="docs/positions.csv"></div>
+          <div class="field"><label>Path</label><input id="path" value="positions.csv"></div>
         </div>
         <div class="field"><label>Commit message</label><input id="message" value="Update positions.csv (web)"></div>
         <div class="field"><label>Token (fine-grained PAT, Contents: Read & Write)</label><input id="token" type="password" placeholder="github_pat_..."></div>
@@ -206,14 +207,46 @@
 
 <script>
 (() => {
-  // HARD catch: show the real error message on screen
-  const fatal = document.getElementById('fatal');
+  // ===== Bulletproof on-page error display (sync + async) =====
+  function getFatalBox() {
+    let el = document.getElementById('fatal');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'fatal';
+      const container = document.querySelector('.container') || document.body;
+      container.appendChild(el);
+    }
+    return el;
+  }
+
+  function showFatal(prefix, msg) {
+    const el = getFatalBox();
+    el.innerHTML = `<pre class="err">${prefix}\n${msg}</pre>`;
+  }
+
   window.addEventListener('error', (ev) => {
-    const msg = (ev && ev.error && ev.error.stack) ? ev.error.stack : (ev.message || String(ev));
-    fatal.innerHTML = `<pre class="err">FATAL JS ERROR:\n${msg}</pre>`;
+    try {
+      const err = ev && ev.error;
+      const msg = (err && err.stack) ? err.stack : (ev && ev.message) ? ev.message : String(ev);
+      showFatal('FATAL JS ERROR:', msg);
+    } catch (e) {
+      try { console.error('Error handler failed', e); } catch {}
+    }
   });
 
-  const csvUrl = 'positions.csv?ts=' + Date.now();
+  window.addEventListener('unhandledrejection', (ev) => {
+    try {
+      const r = ev && ev.reason;
+      const msg = (r && r.stack) ? r.stack : (r && r.message) ? r.message : String(r);
+      showFatal('UNHANDLED PROMISE REJECTION:', msg);
+      try { ev.preventDefault(); } catch {}
+    } catch (e) {
+      try { console.error('Unhandledrejection handler failed', e); } catch {}
+    }
+  });
+  // ===========================================================
+
+  const csvUrl = 'positions.csv?ts=' + Date.now(); // ✅ load from repo root
 
   const tbl = document.getElementById('tbl');
   const filterEl = document.getElementById('filter');
@@ -492,7 +525,7 @@
       const owner = ownerEl.value.trim();
       const repo = repoEl.value.trim();
       const branch = branchEl.value.trim() || 'main';
-      const path = pathEl.value.trim() || 'docs/positions.csv';
+      const path = pathEl.value.trim() || 'positions.csv';
       const token = tokenEl.value.trim();
       if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
 
@@ -518,7 +551,7 @@
       const owner = ownerEl.value.trim();
       const repo = repoEl.value.trim();
       const branch = branchEl.value.trim() || 'main';
-      const path = pathEl.value.trim() || 'docs/positions.csv';
+      const path = pathEl.value.trim() || 'positions.csv';
       const message = msgEl.value.trim() || 'Update positions.csv (web)';
       const token = tokenEl.value.trim();
       if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
