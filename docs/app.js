@@ -1,24 +1,9 @@
-/* docs/app.js
-   Portfolio Manager Dashboard (EXECUTE updates positions.csv)
+/* docs/app.js — prettier dashboard + lock EXECUTE after click */
+const VERSION = "2026-01-25-DASHBOARD-NICE-V1";
 
-   FIXES:
-   - Adds VERSION marker so you know the right file is loaded
-   - BUY now ALWAYS prompts for option_entry_price + underlying_entry_price
-   - EXECUTE now allows overriding contract count (sell/add/buy) at click time
-   - Strong validation + clearer errors
-
-   Requires:
-   - docs/index.html has inputs with ids: owner, repo, token and buttons: saveBtn, loadBtn
-   - table body id: planBody
-   - status id: status
-   - log id: log
-*/
-
-const VERSION = "2026-01-25-EXEC-PROMPTS-V2";
-
-const WORKFLOW_FILE = "apply_move.yml"; // .github/workflows/apply_move.yml
+const WORKFLOW_FILE = "apply_move.yml";
 const BRANCH = "main";
-const PLAN_CSV = "portfolio_plan.csv"; // served from /docs
+const PLAN_CSV = "portfolio_plan.csv";
 
 const els = {
   owner: document.getElementById("owner"),
@@ -26,10 +11,22 @@ const els = {
   token: document.getElementById("token"),
   saveBtn: document.getElementById("saveBtn"),
   loadBtn: document.getElementById("loadBtn"),
+  resetBtn: document.getElementById("resetBtn"),
   planBody: document.getElementById("planBody"),
   status: document.getElementById("status"),
   log: document.getElementById("log"),
 };
+
+const EXEC_STORE_KEY = "pm_executed_moves_v1";
+
+function log(msg) {
+  if (!els.log) return;
+  els.log.textContent = `${new Date().toISOString()}  ${msg}\n` + els.log.textContent;
+}
+function setStatus(msg) {
+  if (!els.status) return;
+  els.status.textContent = msg;
+}
 
 function escapeHtml(s) {
   return String(s ?? "")
@@ -38,36 +35,48 @@ function escapeHtml(s) {
     .replaceAll(">", "&gt;");
 }
 
-function log(msg) {
-  if (!els.log) return;
-  els.log.textContent = `${new Date().toISOString()}  ${msg}\n` + els.log.textContent;
+/** ---------- local persistence of executed moves ---------- */
+function loadExecutedMap() {
+  try {
+    return JSON.parse(localStorage.getItem(EXEC_STORE_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+function saveExecutedMap(map) {
+  localStorage.setItem(EXEC_STORE_KEY, JSON.stringify(map || {}));
+}
+function markExecuted(moveId) {
+  const m = loadExecutedMap();
+  m[moveId] = { ts: Date.now() };
+  saveExecutedMap(m);
+}
+function isExecuted(moveId) {
+  const m = loadExecutedMap();
+  return !!m[moveId];
+}
+function resetExecuted() {
+  localStorage.removeItem(EXEC_STORE_KEY);
 }
 
-function setStatus(msg) {
-  if (!els.status) return;
-  els.status.textContent = msg;
-}
-
-function saveSettings() {
-  const o = (els.owner?.value || "").trim();
-  const r = (els.repo?.value || "").trim();
-  const t = (els.token?.value || "");
-
-  localStorage.setItem("pm_owner", o);
-  localStorage.setItem("pm_repo", r);
-  localStorage.setItem("pm_token", t);
-
-  setStatus("Saved ✅");
-  log(`Saved owner/repo/token in localStorage. owner=${o} repo=${r}`);
-}
-
+/** ---------- settings ---------- */
 function loadSettings() {
   if (els.owner) els.owner.value = localStorage.getItem("pm_owner") || "";
   if (els.repo) els.repo.value = localStorage.getItem("pm_repo") || "";
   if (els.token) els.token.value = localStorage.getItem("pm_token") || "";
 }
+function saveSettings() {
+  const o = (els.owner?.value || "").trim();
+  const r = (els.repo?.value || "").trim();
+  const t = (els.token?.value || "");
+  localStorage.setItem("pm_owner", o);
+  localStorage.setItem("pm_repo", r);
+  localStorage.setItem("pm_token", t);
+  setStatus("Saved ✅");
+  log(`Saved owner/repo/token. owner=${o} repo=${r}`);
+}
 
-/** Robust CSV parser (handles quotes + commas) */
+/** Robust CSV parsing */
 function parseCSV(text) {
   const rows = [];
   let row = [], field = "";
@@ -79,8 +88,8 @@ function parseCSV(text) {
 
     if (inQuotes) {
       if (c === '"' && n === '"') { field += '"'; i++; }
-      else if (c === '"') { inQuotes = false; }
-      else { field += c; }
+      else if (c === '"') inQuotes = false;
+      else field += c;
     } else {
       if (c === '"') inQuotes = true;
       else if (c === ",") { row.push(field); field = ""; }
@@ -88,12 +97,11 @@ function parseCSV(text) {
         row.push(field); field = "";
         if (row.some(x => x.trim() !== "")) rows.push(row);
         row = [];
-      } else if (c === "\r") {
-        // ignore
-      } else field += c;
+      } else if (c === "\r") { /* ignore */ }
+      else field += c;
     }
   }
-  if (field.length > 0 || row.length) { row.push(field); rows.push(row); }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
   return rows;
 }
 
@@ -113,10 +121,10 @@ function toObjects(csvText) {
 
 function pill(type) {
   const t = (type || "").toUpperCase();
-  if (t === "SELL") return `<span class="pill pill-sell">SELL</span>`;
-  if (t === "BUY") return `<span class="pill pill-buy">BUY</span>`;
-  if (t === "ADD") return `<span class="pill pill-add">ADD</span>`;
-  if (t === "HOLD") return `<span class="pill pill-hold">HOLD</span>`;
+  if (t === "SELL") return `<span class="pill sell">SELL</span>`;
+  if (t === "BUY") return `<span class="pill buy">BUY</span>`;
+  if (t === "ADD") return `<span class="pill add">ADD</span>`;
+  if (t === "HOLD") return `<span class="pill hold">HOLD</span>`;
   return `<span class="pill">${escapeHtml(type || "")}</span>`;
 }
 
@@ -128,7 +136,24 @@ function buildMoveId(row, idx) {
   const t = (row["Ticker"] || "").trim().toUpperCase();
   const ty = (row["Type"] || "").trim().toUpperCase();
   const opt = (row["Option"] || "").trim();
-  return `${idx + 1}-${ty}-${t}-${(row["OptionSymbol"] || opt || "NA")}`.replaceAll(" ", "_").slice(0, 120);
+  const sym = (row["OptionSymbol"] || "").trim();
+  return `${idx + 1}-${ty}-${t}-${(sym || opt || "NA")}`.replaceAll(" ", "_").slice(0, 120);
+}
+
+function askInt(label, defaultVal) {
+  const raw = prompt(`${label}\n(Default: ${defaultVal})`, String(defaultVal ?? "").trim());
+  if (raw === null) return null;
+  const v = Number(String(raw).trim());
+  if (!Number.isFinite(v) || v < 0) return NaN;
+  return Math.floor(v);
+}
+function askFloat(label) {
+  const raw = prompt(label, "");
+  if (raw === null) return null;
+  const s = String(raw).trim().replace("$", "");
+  const v = Number(s);
+  if (!Number.isFinite(v) || v <= 0) return NaN;
+  return v;
 }
 
 async function loadPlan() {
@@ -136,12 +161,11 @@ async function loadPlan() {
   if (els.planBody) els.planBody.innerHTML = `<tr><td colspan="12" style="padding:14px;">Loading…</td></tr>`;
 
   try {
-    const url = `${PLAN_CSV}?ts=${Date.now()}`; // cache bust
+    const url = `${PLAN_CSV}?ts=${Date.now()}`;
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`Failed to load plan: ${res.status}`);
     const text = await res.text();
     const rows = toObjects(text);
-
     setStatus(`Loaded rows: ${rows.length}`);
     log(`Loaded plan rows=${rows.length} from docs/${PLAN_CSV}`);
     renderTable(rows);
@@ -149,7 +173,7 @@ async function loadPlan() {
     setStatus("Load failed ❌");
     if (els.planBody) {
       els.planBody.innerHTML =
-        `<tr><td colspan="12" style="padding:14px;color:#991b1b;">${escapeHtml(e.message)}</td></tr>`;
+        `<tr><td colspan="12" style="padding:14px;color:#fecaca;">${escapeHtml(e.message)}</td></tr>`;
     }
     log(`ERROR: ${e.message}`);
   }
@@ -163,29 +187,37 @@ function renderTable(rows) {
     return;
   }
 
+  // Put actionable rows first
+  rows.sort((a, b) => {
+    const ta = getMoveTypeFromRow(a);
+    const tb = getMoveTypeFromRow(b);
+    const pa = (ta === "HOLD" || ta === "") ? 1 : 0;
+    const pb = (tb === "HOLD" || tb === "") ? 1 : 0;
+    if (pa !== pb) return pa - pb;
+    return String((a["Ticker"] || "")).localeCompare(String((b["Ticker"] || "")));
+  });
+
   const html = rows.map((r, idx) => {
     const type = getMoveTypeFromRow(r);
     const ticker = (r["Ticker"] || "").trim().toUpperCase();
-    const optionName = (r["Option"] || "").trim(); // may be blank for BUY in your plan
-    const moveId = buildMoveId(r, idx);
-
-    const sellC = (r["SellContracts"] || "0").trim();
-    const addC  = (r["AddContracts"] || "0").trim();
-    const buyC  = (r["BuyContracts"] || "0").trim();
-
+    const optionName = (r["Option"] || "").trim();
     const strategy = (r["Strategy"] || "").trim();
     const expiry = (r["Expiry"] || "").trim();
     const optionSymbol = (r["OptionSymbol"] || "").trim();
     const reason = (r["Reason"] || "").trim();
 
-    const ackBtn = `<button class="ok" data-action="ack" data-moveid="${escapeHtml(moveId)}">ACK</button>`;
-    const executeDisabled = (type === "HOLD" || type === "");
-    const execBtn = executeDisabled
-      ? `<button disabled>EXECUTE</button>`
-      : `<button class="warn" data-action="execute" data-moveid="${escapeHtml(moveId)}">EXECUTE · Update CSV</button>`;
+    const moveId = buildMoveId(r, idx);
+    const done = isExecuted(moveId);
+
+    const sellC = (r["SellContracts"] || "0").trim();
+    const addC  = (r["AddContracts"] || "0").trim();
+    const buyC  = (r["BuyContracts"] || "0").trim();
+
+    const executeDisabled = done || type === "HOLD" || type === "";
+    const execLabel = done ? `Executed ✅` : `EXECUTE · Update CSV`;
 
     return `
-      <tr data-idx="${idx}"
+      <tr class="${done ? "row-done" : ""}"
           data-moveid="${escapeHtml(moveId)}"
           data-type="${escapeHtml(type)}"
           data-ticker="${escapeHtml(ticker)}"
@@ -195,10 +227,11 @@ function renderTable(rows) {
           data-buy="${escapeHtml(buyC)}"
           data-strategy="${escapeHtml(strategy)}"
           data-expiry="${escapeHtml(expiry)}"
-          data-symbol="${escapeHtml(optionSymbol)}">
+          data-symbol="${escapeHtml(optionSymbol)}"
+      >
         <td>${pill(type)}</td>
         <td class="mono">${escapeHtml(ticker)}</td>
-        <td class="mono">${escapeHtml(optionName || "-")}</td>
+        <td class="mono wraptext">${escapeHtml(optionName || "-")}</td>
         <td class="num">${escapeHtml(r["ContractsHeld"] || "")}</td>
         <td class="num">${escapeHtml(sellC)}</td>
         <td class="num">${escapeHtml(addC)}</td>
@@ -206,8 +239,16 @@ function renderTable(rows) {
         <td>${escapeHtml(strategy || "-")}</td>
         <td class="mono">${escapeHtml(expiry || "-")}</td>
         <td class="mono">${escapeHtml(optionSymbol || "-")}</td>
-        <td>${escapeHtml(reason || "-")}</td>
-        <td>${ackBtn} ${execBtn}</td>
+        <td class="muted wraptext">${escapeHtml(reason || "-")}</td>
+        <td>
+          <div class="act">
+            <button class="btnmini btn-ack" data-action="ack">ACK</button>
+            <button class="btnmini btn-exec" data-action="execute" ${executeDisabled ? "disabled" : ""}>
+              ${done ? "Executed ✅" : "EXECUTE · Update CSV"}
+            </button>
+            ${done ? `<span class="doneTag">Locked</span>` : ``}
+          </div>
+        </td>
       </tr>
     `;
   }).join("");
@@ -217,23 +258,6 @@ function renderTable(rows) {
   els.planBody.querySelectorAll("button[data-action]").forEach(btn => {
     btn.addEventListener("click", onActionClick);
   });
-}
-
-function askInt(label, defaultVal) {
-  const raw = prompt(`${label}\n(Default: ${defaultVal})`, String(defaultVal ?? "").trim());
-  if (raw === null) return null; // cancel
-  const v = Number(String(raw).trim());
-  if (!Number.isFinite(v) || v < 0) return NaN;
-  return Math.floor(v);
-}
-
-function askFloat(label) {
-  const raw = prompt(label, "");
-  if (raw === null) return null; // cancel
-  const s = String(raw).trim().replace("$", "");
-  const v = Number(s);
-  if (!Number.isFinite(v) || v <= 0) return NaN;
-  return v;
 }
 
 async function onActionClick(e) {
@@ -266,69 +290,62 @@ async function onActionClick(e) {
   const repo = (els.repo?.value || "").trim();
   const token = els.token?.value || "";
 
-  if (!owner || !repo) {
-    alert("Please set owner + repo.");
-    return;
-  }
-  if (!token) {
-    alert("No token saved. Paste your PAT and click Save Token first.");
-    return;
-  }
+  if (!owner || !repo) return alert("Please set owner + repo.");
+  if (!token) return alert("No token saved. Paste your PAT and click Save Token first.");
 
-  // Allow overriding contract count at execution time (important!)
+  // Contract overrides (better real-life UX)
   if (type === "SELL") {
-    const override = askInt(`SELL ${ticker}\nHow many contracts did you actually SELL?`, sellContracts || "0");
-    if (override === null) return;
-    if (Number.isNaN(override) || override <= 0) { alert("SELL contracts must be > 0"); return; }
-    sellContracts = String(override);
+    const v = askInt(`SELL ${ticker}\nHow many contracts did you actually SELL?`, sellContracts || "0");
+    if (v === null) return;
+    if (Number.isNaN(v) || v <= 0) return alert("SELL contracts must be > 0");
+    sellContracts = String(v);
   } else if (type === "ADD") {
-    const override = askInt(`ADD ${ticker}\nHow many contracts did you actually ADD?`, addContracts || "0");
-    if (override === null) return;
-    if (Number.isNaN(override) || override <= 0) { alert("ADD contracts must be > 0"); return; }
-    addContracts = String(override);
+    const v = askInt(`ADD ${ticker}\nHow many contracts did you actually ADD?`, addContracts || "0");
+    if (v === null) return;
+    if (Number.isNaN(v) || v <= 0) return alert("ADD contracts must be > 0");
+    addContracts = String(v);
   } else if (type === "BUY") {
-    const override = askInt(`BUY ${ticker}\nHow many contracts did you actually BUY?`, buyContracts || "0");
-    if (override === null) return;
-    if (Number.isNaN(override) || override <= 0) { alert("BUY contracts must be > 0"); return; }
-    buyContracts = String(override);
+    const v = askInt(`BUY ${ticker}\nHow many contracts did you actually BUY?`, buyContracts || "0");
+    if (v === null) return;
+    if (Number.isNaN(v) || v <= 0) return alert("BUY contracts must be > 0");
+    buyContracts = String(v);
   }
 
-  // SELL/ADD must have option_name; prompt if missing
+  // SELL/ADD requires option_name
   if ((type === "SELL" || type === "ADD") && (!optionName || optionName.trim() === "")) {
-    optionName = prompt("Missing option_name.\nPaste it exactly as in positions.csv\nExample: NFLX 2026-02-20 P 88", "");
-    if (!optionName || optionName.trim() === "") {
-      alert("SELL/ADD requires option_name.");
-      return;
-    }
+    optionName = prompt("Missing option_name.\nPaste exactly as in positions.csv\nExample: NFLX 2026-02-20 P 88", "");
+    if (!optionName || optionName.trim() === "") return alert("SELL/ADD requires option_name.");
   }
 
-  // BUY requires entry prices (actual fills)
+  // BUY needs actual fills
   let optionEntryPrice = "";
   let underlyingEntryPrice = "";
-
   if (type === "BUY") {
-    const optP = askFloat("Enter OPTION fill price (avg fill). Example: 4.52");
-    if (optP === null) return;
-    if (Number.isNaN(optP)) { alert("BUY requires a valid option fill price > 0"); return; }
-    optionEntryPrice = String(optP);
+    const op = askFloat("Enter OPTION fill price (avg fill). Example: 4.52");
+    if (op === null) return;
+    if (Number.isNaN(op)) return alert("BUY requires a valid option fill price > 0");
+    optionEntryPrice = String(op);
 
-    const undP = askFloat("Enter UNDERLYING price at execution. Example: 135.12");
-    if (undP === null) return;
-    if (Number.isNaN(undP)) { alert("BUY requires a valid underlying price > 0"); return; }
-    underlyingEntryPrice = String(undP);
+    const up = askFloat("Enter UNDERLYING price at execution. Example: 135.12");
+    if (up === null) return;
+    if (Number.isNaN(up)) return alert("BUY requires a valid underlying price > 0");
+    underlyingEntryPrice = String(up);
   }
 
   const ok = confirm(
-    `EXECUTE will update positions.csv via GitHub Actions.\n\n` +
+    `EXECUTE will dispatch GitHub Action to update positions.csv.\n\n` +
     `${type} ${ticker}\n` +
-    `${optionName || "(option_name will be built from symbol)"}\n\n` +
+    `${optionName || "(will be built from option_symbol)"}\n\n` +
     `Counts: SELL=${sellContracts} ADD=${addContracts} BUY=${buyContracts}\n` +
     (type === "BUY" ? `Prices: option=${optionEntryPrice} underlying=${underlyingEntryPrice}\n\n` : "\n") +
     `Proceed?`
   );
   if (!ok) return;
 
+  // UI: lock + spinner immediately
+  const oldHtml = btn.innerHTML;
   btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span>&nbsp;Dispatching…`;
 
   try {
     const inputs = {
@@ -336,31 +353,35 @@ async function onActionClick(e) {
       move_type: type,
       ticker: ticker,
       option_name: optionName || "",
-
       sell_contracts: sellContracts || "0",
       add_contracts: addContracts || "0",
       buy_contracts: buyContracts || "0",
-
       strategy: strategy || "",
       expiry: expiry || "",
       option_symbol: optionSymbol || "",
-
       option_entry_price: optionEntryPrice || "",
       underlying_entry_price: underlyingEntryPrice || "",
     };
 
-    // Debug proof in UI log
     log(`DISPATCH inputs=${JSON.stringify(inputs)}`);
-
     await dispatchWorkflow({ owner, repo, token, inputs });
 
+    // Mark executed locally (dims row + locks)
+    markExecuted(moveId);
+    tr.classList.add("row-done");
+
+    btn.innerHTML = "Executed ✅";
+    btn.disabled = true;
+
+    setStatus(`Dispatched ✅ ${type} ${ticker}`);
     log(`🚀 Dispatch OK: ${type} ${ticker} move_id=${moveId}`);
     alert("✅ Dispatched. Check Actions tab for status. If successful, positions.csv will be committed.");
   } catch (err) {
+    btn.disabled = false;
+    btn.innerHTML = oldHtml;
+    setStatus("Dispatch failed ❌");
     log(`❌ Dispatch failed: ${err.message}`);
     alert(`❌ Dispatch failed:\n${err.message}`);
-  } finally {
-    btn.disabled = false;
   }
 }
 
@@ -388,9 +409,16 @@ async function dispatchWorkflow({ owner, repo, token, inputs }) {
   }
 }
 
-// Wire up (safe even if some elements missing)
+/** wiring */
 if (els.saveBtn) els.saveBtn.addEventListener("click", saveSettings);
 if (els.loadBtn) els.loadBtn.addEventListener("click", loadPlan);
+if (els.resetBtn) els.resetBtn.addEventListener("click", () => {
+  if (!confirm("Reset all local Executed/Locked flags on this device?")) return;
+  resetExecuted();
+  loadPlan();
+  setStatus("Reset executed flags ✅");
+  log("Reset executed flags (localStorage).");
+});
 
 loadSettings();
 loadPlan();
