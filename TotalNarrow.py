@@ -6,7 +6,7 @@ Nightly runner:
 - outputs ONLY fresh entries for tomorrow (no ledger)
 - prints a ready-to-trade checklist
 - saves CSV + TXT checklist
-- sends a PRETTY HTML EMAIL (with plain-text fallback)
+- sends a PRETTY HTML EMAIL (HTML-only to avoid clients choosing text/plain)
 - optionally saves the same HTML to a file
 
 Usage:
@@ -38,8 +38,8 @@ except Exception:
 
 import smtplib
 import ssl
-from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
 
 
 # ---------------------- Config defaults ----------------------
@@ -182,14 +182,23 @@ def smtp_ready() -> bool:
     return all([SMTP_HOST, SMTP_PORT > 0, SMTP_USER, SMTP_PASS, EMAIL_TO])
 
 
-def send_pretty_email(subject: str, html_body: str, text_body: str) -> None:
-    msg = MIMEMultipart("alternative")
+def send_pretty_email(subject: str, html_body: str) -> None:
+    """
+    HTML-ONLY email to prevent clients from preferring the text/plain part.
+    """
+    msg = MIMEText(html_body, "html", "utf-8")
     msg["Subject"] = subject
     msg["To"] = EMAIL_TO
     msg["From"] = f"Turtle Scanner <{SMTP_USER}>"
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
 
-    msg.attach(MIMEText(text_body, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    # Explicit Content-Type (extra safety through some gateways)
+    msg.replace_header("Content-Type", 'text/html; charset="utf-8"')
+
+    # Debug proof in logs
+    print("SENDING MIME:", msg["Content-Type"])
+    print("HTML PREVIEW (first 200 chars):", html_body[:200].replace("\n", " "))
 
     if SMTP_PORT == 465:
         ctx = ssl.create_default_context()
@@ -604,7 +613,7 @@ def main(argv=None):
             f.write(html_email)
         print(f"HTML email view saved to: {html_path}")
 
-    # Optionally send email
+    # Optionally send email (HTML-only)
     if int(args.send_email) == 1:
         if EMAIL_MODE == "entries_only" and (df is None or df.empty):
             print("EMAIL_MODE=entries_only and no entries — skipping email.")
@@ -615,8 +624,7 @@ def main(argv=None):
             return 0
 
         subject = f"🐢 Turtle Entries — {date_str}"
-        text_body = checklist or f"Turtle Entries — {date_str}\n(No checklist text)"
-        send_pretty_email(subject, html_email, text_body)
+        send_pretty_email(subject, html_email)
         print(f"Email sent to: {EMAIL_TO}")
 
     return 0
