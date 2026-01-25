@@ -140,7 +140,7 @@
       font-size: 12.5px;
       white-space: pre-wrap;
       overflow:auto;
-      max-height: 240px;
+      max-height: 260px;
       display:none;
     }
 
@@ -214,8 +214,8 @@
   <div class="panel">
     <div class="toolbar">
       <span class="chip"><span id="dot" class="dot"></span><span id="status">Loading…</span></span>
-      <span class="chip"><span class="muted">Rows:</span> <strong id="rowsMeta">—</strong></span>
-      <span class="chip"><span class="muted">Source:</span> <strong>docs/positions.csv</strong></span>
+      <span class="chip">Rows: <strong id="rowsMeta">—</strong></span>
+      <span class="chip">Source: <strong>docs/positions.csv</strong></span>
 
       <div class="spacer"></div>
 
@@ -338,19 +338,20 @@
   let sortState = { col: -1, dir: 1 };
   let dirty = false;
 
-  const setStatus = (kind, text) => {
+  function setStatus(kind, text){
     statusEl.textContent = text;
     dotEl.className = 'dot ' + (kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : '');
-  };
+  }
   const deepCopy = (x) => JSON.parse(JSON.stringify(x));
-  const markDirty = () => {
+
+  function markDirty(){
     dirty = true;
     resetBtn.disabled = false;
     commitBtn.disabled = false;
-  };
+  }
 
   // --- CSV parsing ---
-  const parseCSV = (text) => {
+  function parseCSV(text){
     const rows = [];
     let row = [], cur = '', inQuotes = false;
     for (let i=0; i<text.length; i++){
@@ -369,15 +370,15 @@
     }
     if (cur.length || row.length){ row.push(cur); rows.push(row); }
     return rows;
-  };
+  }
 
-  const csvEscape = (s) => {
+  function csvEscape(s){
     s = (s ?? '').toString();
     if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
-  };
+  }
 
-  const toCSV = (headers, rows) => {
+  function toCSV(headers, rows){
     const lines = [];
     lines.push(headers.map(csvEscape).join(','));
     for (const r of rows){
@@ -385,14 +386,14 @@
       lines.push(rr.join(','));
     }
     return lines.join('\n') + '\n';
-  };
+  }
 
-  const updateDeleteState = () => {
+  function updateDeleteState(){
     const anyChecked = tbl.querySelectorAll('tbody input[type="checkbox"]:checked').length > 0;
     deleteRowsBtn.disabled = !anyChecked;
-  };
+  }
 
-  const sortBy = (colIdx, dir) => {
+  function sortBy(colIdx, dir){
     const num = (v) => {
       const s = (v ?? '').toString().trim().replace(/,/g,'');
       if (s === '') return null;
@@ -405,9 +406,9 @@
       if (an !== null && bn !== null) return (an - bn) * dir;
       return av.toString().localeCompare(bv.toString(), undefined, { numeric:true, sensitivity:'base' }) * dir;
     });
-  };
+  }
 
-  const render = () => {
+  function render(){
     const q = filterEl.value.toLowerCase().trim();
     const visibleIdx = [];
     data.forEach((r, idx) => {
@@ -472,7 +473,7 @@
     tbl.appendChild(thead);
     tbl.appendChild(tbody);
     updateDeleteState();
-  };
+  }
 
   // ===== Actions =====
   filterEl.addEventListener('input', render);
@@ -517,7 +518,7 @@
   });
 
   // ===== Modal controls =====
-  const openModal = () => {
+  function openModal(){
     commitResult.innerHTML = '';
     clearLog();
     modalOverlay.style.display = 'flex';
@@ -531,37 +532,38 @@
       if (!repoEl.value) repoEl.value = repoGuess;
       if (!branchEl.value) branchEl.value = 'main';
     }catch(e){}
-  };
-  const closeModal = () => { modalOverlay.style.display = 'none'; };
+  }
+  function closeModal(){ modalOverlay.style.display = 'none'; }
 
   commitBtn.addEventListener('click', openModal);
   closeModalBtn.addEventListener('click', closeModal);
   modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
 
-  const setResultError = (e) => {
+  function setResultError(e){
     const msg = (e && e.stack) ? e.stack : String(e);
     commitResult.innerHTML = `<pre class="err">${msg}</pre>`;
-  };
-  const setResultOk = (html) => { commitResult.innerHTML = html; };
+  }
+  function setResultOk(html){ commitResult.innerHTML = html; }
 
-  const apiHeaders = (token) => ({
-    'Accept': 'application/vnd.github+json',
-    'Authorization': `Bearer ${token}`,
-    'X-GitHub-Api-Version': '2022-11-28'
-  });
-
+  function apiHeaders(token){
+    return {
+      'Accept': 'application/vnd.github+json',
+      'Authorization': `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28'
+    };
+  }
   const ghPath = (p) => encodeURIComponent(p).replace(/%2F/g,'/');
 
-  const getFileInfo = async ({owner, repo, path, branch, token}) => {
+  async function getFileInfo({owner, repo, path, branch, token}){
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}?ref=${encodeURIComponent(branch)}`;
     const res = await fetch(url, { headers: apiHeaders(token) });
     const raw = await res.text();
     let json = {};
     try { json = JSON.parse(raw); } catch {}
     return { res, json, raw, url };
-  };
+  }
 
-  const putFile = async ({owner, repo, path, branch, token, message, contentBase64, sha}) => {
+  async function putFile({owner, repo, path, branch, token, message, contentBase64, sha}){
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}`;
     const body = { message, content: contentBase64, branch };
     if (sha) body.sha = sha;
@@ -580,10 +582,10 @@
       throw new Error(`Commit failed (${res.status}): ${msg}\nRaw: ${raw}`);
     }
     return json;
-  };
+  }
 
   // ✅ Safari-safe base64 encoding (chunked)
-  const b64encodeUTF8 = (str) => {
+  function b64encodeUTF8(str){
     const bytes = new TextEncoder().encode(str);
     let binary = '';
     const chunkSize = 0x8000;
@@ -592,7 +594,7 @@
       binary += String.fromCharCode.apply(null, chunk);
     }
     return btoa(binary);
-  };
+  }
 
   testBtn.addEventListener('click', async () => {
     try{
@@ -667,12 +669,6 @@
     }
   });
 
-  // enable / disable commit based on edits
-  const enableIfEdited = () => {
-    // commit allowed only after an edit
-    commitBtn.disabled = !dirty;
-  };
-
   // ===== Load =====
   (async () => {
     try{
@@ -695,7 +691,6 @@
       setStatus('ok', 'Loaded');
       downloadBtn.disabled = false;
       render();
-      enableIfEdited();
     }catch(e){
       setStatus('bad', 'Load failed');
       rowsMetaEl.textContent = '—';
@@ -705,14 +700,6 @@
       </td></tr></tbody>`;
     }
   })();
-
-  // Hook markDirty to update commit enable immediately
-  const _markDirty = markDirty;
-  // override by wrapping
-  // (This ensures commit button enables even if render timing differs)
-  // eslint-disable-next-line no-unused-vars
-  markDirty = () => { _markDirty(); enableIfEdited(); };
-
 })();
 </script>
 </body>
