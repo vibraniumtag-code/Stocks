@@ -208,7 +208,7 @@ jobs:
 
           changed = False
 
-          if move_type in ("SELL","ADD"):
+          if move_type in ("SELL","ADD","DELETE"):
               if not option_name:
                   raise SystemExit(f"{move_type} requires option_name")
               if move_type == "SELL" and sell_n <= 0:
