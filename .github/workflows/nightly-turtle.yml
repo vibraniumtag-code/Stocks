@@ -2,8 +2,8 @@ name: Nightly Turtle Scanner (Pretty HTML Email)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 2,15 * * *"  # 02:00 & 15:00 UTC
+#  schedule:
+#    - cron: "0 2,15 * * *"  # 02:00 & 15:00 UTC
 
 jobs:
   run:
