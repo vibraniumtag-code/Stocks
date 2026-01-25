@@ -1,0 +1,4 @@
+      csv_blob:
+        description: "Full CSV content (used only when move_type=UPSERT_BULK)"
+        required: false
+        type: string
