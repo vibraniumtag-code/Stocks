@@ -1,368 +1,403 @@
-// Positions Editor (docs/positions_app.js)
-//
-// Requires:
-// - docs/positions.csv exists (mirrored by workflow)
-// - workflow apply_position.yml supports move_type: SELL, ADD, BUY, DELETE
-//
-// Saves settings + token to localStorage.
+/* Positions Editor — full page JS
+   Loads from Pages root: ./positions.csv
+   Saves by dispatching your "Apply Move" workflow with an UPSERT move.
+*/
 
-const POS_CSV_URL = "./positions.csv"; // served from docs/
+const $ = (id) => document.getElementById(id);
 
-const LS_KEY = "pos_editor_settings_v1";
-const LS_TOKEN = "pos_editor_token_v1";
+// IMPORTANT: On GitHub Pages (docs as root), this must be relative root
+const POS_CSV_URL = "./positions.csv";
 
-function $(id){ return document.getElementById(id); }
+const CFG_KEY = "stocks_cfg_v1";
+const DEFAULT_CFG = {
+  owner: "vibraniumtag-code",
+  repo: "Stocks",
+  branch: "main",
+  workflow: "apply_move.yml", // file name inside .github/workflows/
+  token: ""
+};
 
-function loadSettings(){
-  const raw = localStorage.getItem(LS_KEY);
-  const s = raw ? JSON.parse(raw) : {};
-  $("owner").value = s.owner || "";
-  $("repo").value = s.repo || "";
-  $("workflow").value = s.workflow || "apply_position.yml";
-  $("branch").value = s.branch || "main";
-  $("token").value = localStorage.getItem(LS_TOKEN) || "";
-}
+// --------- UI state
+let state = {
+  rows: [],          // current working rows (editable)
+  original: [],      // last loaded rows (for dirty compare)
+  deletedKeys: new Set(),
+  dirty: false,
+  saving: false,
+};
 
-function saveSettings(){
-  const s = {
-    owner: $("owner").value.trim(),
-    repo: $("repo").value.trim(),
-    workflow: $("workflow").value.trim(),
-    branch: $("branch").value.trim(),
-  };
-  localStorage.setItem(LS_KEY, JSON.stringify(s));
-  const tok = $("token").value.trim();
-  if (tok) localStorage.setItem(LS_TOKEN, tok);
-  setGlobalStatus("✅ Settings saved.", "good");
-}
-
-function clearToken(){
-  localStorage.removeItem(LS_TOKEN);
-  $("token").value = "";
-  setGlobalStatus("🧹 Token cleared.", "warn");
-}
-
-function getCfg(){
-  const raw = localStorage.getItem(LS_KEY);
-  const s = raw ? JSON.parse(raw) : {};
-  const token = localStorage.getItem(LS_TOKEN) || $("token").value.trim();
-
-  return {
-    owner: (s.owner || $("owner").value).trim(),
-    repo: (s.repo || $("repo").value).trim(),
-    workflow: (s.workflow || $("workflow").value).trim() || "apply_position.yml",
-    branch: (s.branch || $("branch").value).trim() || "main",
-    token
-  };
-}
-
-function setGlobalStatus(msg, kind=""){
-  const el = $("globalStatus");
-  el.textContent = msg;
-  el.classList.remove("mono");
-  if (kind === "good") el.innerHTML = `<span class="pill good">${escapeHtml(msg)}</span>`;
-  else if (kind === "bad") el.innerHTML = `<span class="pill bad">${escapeHtml(msg)}</span>`;
-  else if (kind === "warn") el.innerHTML = `<span class="pill warn">${escapeHtml(msg)}</span>`;
-  else el.textContent = msg;
-}
-
+// --------- Helpers
 function escapeHtml(s){
-  return (s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+  return String(s ?? "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+
+function setStatus(text, kind="info"){
+  const el = $("status");
+  el.textContent = text;
+  el.className = `status status-${kind}`;
+}
+
+function setDirty(on){
+  state.dirty = !!on;
+  $("dirty").style.display = on ? "inline-flex" : "none";
+}
+
+function setSaving(on){
+  state.saving = !!on;
+  $("btnSave").disabled = on;
+  $("btnAdd").disabled = on;
+  $("btnReload").disabled = on;
+  if (on) setStatus("Saving…", "info");
+}
+
+function rowKey(r){
+  // Unique key (ticker + option_name). Matches how your positions.csv identifies a position.
+  return `${(r.ticker||"").toUpperCase().trim()}|${(r.option_name||"").trim()}`;
+}
+
+function normalizeRow(r){
+  return {
+    ticker: (r.ticker||"").toUpperCase().trim(),
+    option_name: (r.option_name||"").trim(),
+    option_entry_price: (r.option_entry_price||"").trim(),
+    entry_date: (r.entry_date||"").trim(),
+    underlying_entry_price: (r.underlying_entry_price||"").trim(),
+    contracts: (r.contracts||"").trim(),
+  };
+}
+
+function deepEqualRows(a,b){
+  if (a.length !== b.length) return false;
+  for (let i=0;i<a.length;i++){
+    const x=a[i], y=b[i];
+    for (const k of ["ticker","option_name","option_entry_price","entry_date","underlying_entry_price","contracts"]){
+      if (String(x[k]??"") !== String(y[k]??"")) return false;
+    }
+  }
+  return true;
 }
 
 async function fetchNoCache(url){
-  const bust = (url.includes("?") ? "&" : "?") + "t=" + Date.now();
-  const res = await fetch(url + bust, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed to load ${url}: ${res.status}`);
-  return { text: await res.text(), lastMod: res.headers.get("last-modified") };
+  const bust = url.includes("?") ? "&" : "?";
+  const res = await fetch(url + bust + "t=" + Date.now(), { cache: "no-store" });
+  if (!res.ok) throw new Error(`Fetch failed ${res.status} for ${url}`);
+  const text = await res.text();
+  const lastMod = res.headers.get("last-modified") || "";
+  return { text, lastMod };
 }
 
+// Minimal CSV parser (handles quoted fields)
 function parseCSV(text){
-  // Simple CSV parser that handles quoted commas
-  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
-  if (!lines.length) return { header: [], rows: [] };
+  const lines = (text || "").trim().split(/\r?\n/);
+  if (!lines.length) return { headers: [], rows: [] };
 
   const parseLine = (line) => {
     const out = [];
-    let cur = "";
-    let inQ = false;
+    let cur = "", inQ=false;
     for (let i=0;i<line.length;i++){
-      const ch = line[i];
+      const ch=line[i];
       if (ch === '"' ){
         if (inQ && line[i+1] === '"'){ cur += '"'; i++; }
         else inQ = !inQ;
       } else if (ch === "," && !inQ){
-        out.push(cur);
-        cur = "";
-      } else {
-        cur += ch;
-      }
+        out.push(cur); cur="";
+      } else cur += ch;
     }
     out.push(cur);
     return out;
   };
 
-  const header = parseLine(lines[0]).map(h => h.trim());
-  const rows = lines.slice(1).map(l => {
-    const vals = parseLine(l);
+  const headers = parseLine(lines[0]).map(h => h.trim());
+  const rows = [];
+  for (let i=1;i<lines.length;i++){
+    if (!lines[i].trim()) continue;
+    const vals = parseLine(lines[i]);
     const obj = {};
-    header.forEach((h, idx) => obj[h] = (vals[idx] ?? "").trim());
-    return obj;
-  });
-  return { header, rows };
+    headers.forEach((h, idx) => obj[h] = (vals[idx] ?? ""));
+    rows.push(obj);
+  }
+  return { headers, rows };
 }
 
-function buildMoveId(prefix, row){
-  // stable-ish id
-  const t = (row.ticker||"").toUpperCase();
-  const opt = (row.option_name||"").slice(0,40).replace(/\s+/g,"_");
-  return `${Date.now()}-${prefix}-${t}-${opt}`;
-}
-
-async function dispatchWorkflow(inputs){
-  const cfg = getCfg();
-  if (!cfg.owner || !cfg.repo){
-    throw new Error("Missing owner/repo in Settings.");
-  }
-  if (!cfg.token){
-    throw new Error("No token saved. Paste your PAT and click Save Settings.");
-  }
-
-  const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/actions/workflows/${cfg.workflow}/dispatches`;
-  const body = {
-    ref: cfg.branch,
-    inputs
+function toCSV(rows){
+  const headers = ["ticker","option_name","option_entry_price","entry_date","underlying_entry_price","contracts"];
+  const esc = (v) => {
+    const s = String(v ?? "");
+    if (/[",\n]/.test(s)) return `"${s.replaceAll('"','""')}"`;
+    return s;
   };
+  const out = [];
+  out.push(headers.join(","));
+  rows.forEach(r=>{
+    out.push(headers.map(h=>esc(r[h] ?? "")).join(","));
+  });
+  return out.join("\n") + "\n";
+}
+
+// --------- Config storage
+function getCfg(){
+  try{
+    const raw = localStorage.getItem(CFG_KEY);
+    if (!raw) return { ...DEFAULT_CFG };
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_CFG, ...parsed };
+  }catch{
+    return { ...DEFAULT_CFG };
+  }
+}
+
+function setCfg(cfg){
+  localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
+}
+
+function populateCfgUI(){
+  const cfg = getCfg();
+  $("cfgOwner").value = cfg.owner || "";
+  $("cfgRepo").value = cfg.repo || "";
+  $("cfgBranch").value = cfg.branch || "main";
+  $("cfgWorkflow").value = cfg.workflow || "apply_move.yml";
+  $("cfgToken").value = cfg.token || "";
+}
+
+// --------- Table rendering
+function render(){
+  const tbody = $("posTbody");
+  const rows = state.rows.filter(r => !state.deletedKeys.has(rowKey(r)));
+
+  // sort by ticker
+  rows.sort((a,b)=> (a.ticker||"").localeCompare(b.ticker||""));
+
+  if (!rows.length){
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">No rows.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map((r, idx)=>{
+    const key = rowKey(r);
+    return `
+      <tr data-key="${escapeHtml(key)}">
+        <td><input class="in" value="${escapeHtml(r.ticker)}" data-k="ticker" /></td>
+        <td><input class="in" value="${escapeHtml(r.option_name)}" data-k="option_name" /></td>
+        <td><input class="in in-num" value="${escapeHtml(r.option_entry_price)}" data-k="option_entry_price" /></td>
+        <td><input class="in" value="${escapeHtml(r.entry_date)}" data-k="entry_date" placeholder="YYYY-MM-DD" /></td>
+        <td><input class="in in-num" value="${escapeHtml(r.underlying_entry_price)}" data-k="underlying_entry_price" /></td>
+        <td><input class="in in-num" value="${escapeHtml(r.contracts)}" data-k="contracts" /></td>
+        <td class="center">
+          <button class="btn btn-small btn-danger" data-del="1">Delete</button>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  // bind events
+  tbody.querySelectorAll("input.in").forEach(inp=>{
+    inp.addEventListener("input", ()=>{
+      const tr = inp.closest("tr");
+      const key = tr.getAttribute("data-key");
+      const k = inp.getAttribute("data-k");
+      const newVal = inp.value;
+
+      // find row in state.rows by key (key might change if ticker/option_name edited)
+      // We'll locate by DOM position: get current display rows list index
+      // Simpler: rebuild using rowKey matching before edit; store original key in dataset
+      let idx = state.rows.findIndex(rr => rowKey(rr) === key);
+      if (idx === -1){
+        // fallback: try by DOM order
+        const all = [...$("posTbody").querySelectorAll("tr")];
+        const pos = all.indexOf(tr);
+        const liveRows = state.rows.filter(r=>!state.deletedKeys.has(rowKey(r))).sort((a,b)=>(a.ticker||"").localeCompare(b.ticker||""));
+        const tgt = liveRows[pos];
+        idx = state.rows.findIndex(rr => rr === tgt);
+      }
+      if (idx >= 0){
+        state.rows[idx][k] = newVal;
+        // key might have changed if ticker/option_name edited:
+        tr.setAttribute("data-key", escapeHtml(rowKey(state.rows[idx])));
+        setDirty(true);
+      }
+    });
+  });
+
+  tbody.querySelectorAll("button[data-del]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const tr = btn.closest("tr");
+      const key = tr.getAttribute("data-key");
+      state.deletedKeys.add(key);
+      setDirty(true);
+      render();
+    });
+  });
+}
+
+// --------- Loading
+async function loadPositions(){
+  try{
+    setStatus("Loading…", "info");
+    $("fileInfo").textContent = "File: positions.csv";
+
+    const { text, lastMod } = await fetchNoCache(POS_CSV_URL);
+    $("lastUpdated").textContent = lastMod ? `Last updated: ${lastMod}` : "Last updated: (unknown)";
+
+    const parsed = parseCSV(text);
+    const rows = parsed.rows.map(obj => normalizeRow({
+      ticker: obj.ticker || obj.Ticker || "",
+      option_name: obj.option_name || obj.Option || "",
+      option_entry_price: obj.option_entry_price || "",
+      entry_date: obj.entry_date || "",
+      underlying_entry_price: obj.underlying_entry_price || "",
+      contracts: obj.contracts || "0",
+    }));
+
+    state.rows = rows;
+    state.original = rows.map(r=>({ ...r }));
+    state.deletedKeys = new Set();
+    setDirty(false);
+
+    render();
+    setStatus(`✅ Loaded ${rows.length} rows`, "good");
+  }catch(e){
+    $("posTbody").innerHTML = `<tr><td colspan="7" class="muted">❌ ${escapeHtml(e.message || String(e))}</td></tr>`;
+    setStatus("❌ Failed to load", "bad");
+  }
+}
+
+// --------- Workflow dispatch save
+async function dispatchApplyMove(payload){
+  const cfg = getCfg();
+  if (!cfg.token) throw new Error("No token saved. Paste your PAT and click Save Settings first.");
+  if (!cfg.owner || !cfg.repo) throw new Error("Missing owner/repo in settings.");
+  const workflow = cfg.workflow || "apply_move.yml";
+
+  const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/actions/workflows/${workflow}/dispatches`;
 
   const res = await fetch(url, {
     method: "POST",
     headers: {
       "Accept": "application/vnd.github+json",
-      "Authorization": `Bearer ${cfg.token}`,
-      "X-GitHub-Api-Version": "2022-11-28"
+      "Authorization": `token ${cfg.token}`,
+      "Content-Type": "application/json"
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(payload)
   });
 
   if (!res.ok){
-    let msg = `${res.status}`;
-    try { msg += `: ${JSON.stringify(await res.json())}`; }
-    catch { /* ignore */ }
-    throw new Error(`Dispatch failed (${msg})`);
+    let txt = "";
+    try{ txt = await res.text(); }catch{}
+    throw new Error(`Dispatch failed (${res.status}): ${txt}`);
   }
 }
 
-function rowStatusCell(kind, text){
-  if (kind === "good") return `<span class="pill good">${escapeHtml(text)}</span>`;
-  if (kind === "bad") return `<span class="pill bad">${escapeHtml(text)}</span>`;
-  if (kind === "warn") return `<span class="pill warn">${escapeHtml(text)}</span>`;
-  return `<span class="pill">${escapeHtml(text)}</span>`;
-}
+// We will save by sending ONE workflow dispatch with a special move_type=UPSERT_BULK
+// that your apply_move.yml should handle (or you can implement a simpler workflow_dispatch that accepts csv_blob).
+async function saveAllRows(){
+  const cfg = getCfg();
+  if (!cfg.token) throw new Error("No token saved. Add PAT in settings.");
+  // Validate rows
+  const rows = state.rows.filter(r => !state.deletedKeys.has(rowKey(r))).map(normalizeRow);
 
-function renderTable(rows){
-  const tbody = $("posTbody");
-  if (!rows.length){
-    tbody.innerHTML = `<tr><td colspan="10" class="muted">No rows found.</td></tr>`;
-    return;
+  // basic sanity
+  for (const r of rows){
+    if (!r.ticker) throw new Error("One row is missing ticker.");
+    if (!r.option_name) throw new Error(`Row ${r.ticker} is missing option_name.`);
+    const c = Number(r.contracts);
+    if (!Number.isFinite(c) || c < 0) throw new Error(`Row ${r.ticker} has invalid contracts.`);
   }
 
-  tbody.innerHTML = rows.map((r, idx) => {
-    const ticker = escapeHtml(r.ticker || "");
-    const opt = escapeHtml(r.option_name || "");
-    const eopt = escapeHtml(r.option_entry_price || "");
-    const edate = escapeHtml(r.entry_date || "");
-    const eund = escapeHtml(r.underlying_entry_price || "");
-    const contracts = escapeHtml(r.contracts || "0");
+  // Build CSV blob to write
+  const csvBlob = toCSV(rows);
 
-    return `
-      <tr data-idx="${idx}">
-        <td class="mono">${ticker}</td>
-        <td class="mono" style="max-width:420px; word-break:break-word;">${opt}</td>
-        <td class="num mono">${eopt}</td>
-        <td class="mono">${edate}</td>
-        <td class="num mono">${eund}</td>
-        <td class="num mono">${contracts}</td>
-
-        <td class="num">
-          <input class="input small-input" type="number" min="0" step="1" value="${contracts}" data-role="setContracts">
-        </td>
-
-        <td>
-          <button class="btn btn-primary" data-role="apply">✅ Apply</button>
-        </td>
-
-        <td>
-          <button class="btn btn-danger" data-role="delete">🗑 Delete</button>
-        </td>
-
-        <td data-role="status">${rowStatusCell("warn","Ready")}</td>
-      </tr>
-    `;
-  }).join("");
-
-  // Wire events
-  tbody.querySelectorAll("button[data-role='apply']").forEach(btn => {
-    btn.addEventListener("click", async (e) => onApplyClick(e, rows));
-  });
-  tbody.querySelectorAll("button[data-role='delete']").forEach(btn => {
-    btn.addEventListener("click", async (e) => onDeleteClick(e, rows));
+  // Dispatch workflow with inputs that write docs/positions.csv + positions.csv
+  await dispatchApplyMove({
+    ref: cfg.branch || "main",
+    inputs: {
+      move_id: `BULK-${Date.now()}`,
+      move_type: "UPSERT_BULK",
+      ticker: "BULK",
+      option_name: "BULK",
+      sell_contracts: "0",
+      add_contracts: "0",
+      buy_contracts: "0",
+      strategy: "",
+      expiry: "",
+      option_symbol: "",
+      option_entry_price: "",
+      underlying_entry_price: "",
+      csv_blob: csvBlob
+    }
   });
 }
 
-function setRowStatus(tr, kind, text){
-  const cell = tr.querySelector("[data-role='status']");
-  cell.innerHTML = rowStatusCell(kind, text);
-}
-
-function disableRowButtons(tr, disabled){
-  tr.querySelectorAll("button").forEach(b => b.disabled = disabled);
-  tr.querySelectorAll("input").forEach(i => i.disabled = disabled);
-}
-
-async function onApplyClick(e, rows){
-  const tr = e.target.closest("tr");
-  const idx = parseInt(tr.getAttribute("data-idx"), 10);
-  const row = rows[idx];
-
-  const cur = parseInt((row.contracts || "0"), 10) || 0;
-  const desired = parseInt(tr.querySelector("input[data-role='setContracts']").value, 10);
-  const want = isFinite(desired) ? Math.max(desired, 0) : cur;
-
-  if (want === cur){
-    setRowStatus(tr, "warn", "No change");
-    return;
-  }
-
-  // Compute delta => SELL or ADD
-  let move_type = "";
-  let sell_contracts = "0";
-  let add_contracts = "0";
-
-  if (want < cur){
-    move_type = "SELL";
-    sell_contracts = String(cur - want);
-  } else {
-    move_type = "ADD";
-    add_contracts = String(want - cur);
-  }
-
-  const option_name = (row.option_name || "").trim();
-  const ticker = (row.ticker || "").trim();
-
-  if (!ticker || !option_name){
-    setRowStatus(tr, "bad", "Missing ticker/option");
-    return;
-  }
-
-  const inputs = {
-    move_id: buildMoveId(move_type, row),
-    move_type,
-    ticker,
-    option_name,
-    sell_contracts,
-    add_contracts,
-    buy_contracts: "0",
-    strategy: "",
-    expiry: "",
-    option_symbol: "",
+// --------- Add row
+function addRow(){
+  const newRow = {
+    ticker: "",
+    option_name: "",
     option_entry_price: "",
-    underlying_entry_price: ""
+    entry_date: "",
+    underlying_entry_price: "",
+    contracts: "1"
   };
+  state.rows.push(newRow);
+  setDirty(true);
+  render();
 
-  try{
-    disableRowButtons(tr, true);
-    setRowStatus(tr, "warn", "Dispatching…");
-    await dispatchWorkflow(inputs);
-    setRowStatus(tr, "good", "Queued ✅");
-    // keep disabled so user doesn’t double-submit
-    tr.style.opacity = "0.65";
-  }catch(err){
-    disableRowButtons(tr, false);
-    setRowStatus(tr, "bad", String(err.message || err));
-  }
+  // focus last row ticker
+  setTimeout(()=>{
+    const trs = [...$("posTbody").querySelectorAll("tr")];
+    const tr = trs[trs.length - 1];
+    if (tr){
+      const inp = tr.querySelector('input[data-k="ticker"]');
+      inp?.focus();
+      tr.scrollIntoView({ behavior:"smooth", block:"center" });
+    }
+  }, 50);
 }
 
-async function onDeleteClick(e, rows){
-  const tr = e.target.closest("tr");
-  const idx = parseInt(tr.getAttribute("data-idx"), 10);
-  const row = rows[idx];
+// --------- Wire up UI
+$("btnReload").addEventListener("click", loadPositions);
+$("btnAdd").addEventListener("click", addRow);
 
-  const option_name = (row.option_name || "").trim();
-  const ticker = (row.ticker || "").trim();
-  if (!ticker || !option_name){
-    setRowStatus(tr, "bad", "Missing ticker/option");
-    return;
-  }
-
-  // lightweight confirm (iOS-friendly)
-  const ok = confirm(`Delete this row?\n\n${ticker}\n${option_name}`);
-  if (!ok) return;
-
-  const inputs = {
-    move_id: buildMoveId("DELETE", row),
-    move_type: "DELETE",
-    ticker,
-    option_name,
-    sell_contracts: "0",
-    add_contracts: "0",
-    buy_contracts: "0",
-    strategy: "",
-    expiry: "",
-    option_symbol: "",
-    option_entry_price: "",
-    underlying_entry_price: ""
+$("btnSaveCfg").addEventListener("click", ()=>{
+  const cfg = {
+    owner: $("cfgOwner").value.trim(),
+    repo: $("cfgRepo").value.trim(),
+    branch: ($("cfgBranch").value.trim() || "main"),
+    workflow: ($("cfgWorkflow").value.trim() || "apply_move.yml"),
+    token: $("cfgToken").value.trim()
   };
-
-  try{
-    disableRowButtons(tr, true);
-    setRowStatus(tr, "warn", "Deleting…");
-    await dispatchWorkflow(inputs);
-    setRowStatus(tr, "good", "Queued ✅");
-    tr.style.opacity = "0.55";
-  }catch(err){
-    disableRowButtons(tr, false);
-    setRowStatus(tr, "bad", String(err.message || err));
-  }
-}
-
-async function loadPositions(){
-  try{
-    setGlobalStatus("Loading positions…");
-    const { text, lastMod } = await fetchNoCache(POS_CSV_URL);
-    $("lastUpdated").textContent = lastMod ? `Last updated: ${lastMod}` : "Last updated: (unknown)";
-    const parsed = parseCSV(text);
-
-    // Expect your schema; but be tolerant
-    const rows = parsed.rows.map(r => ({
-      ticker: r.ticker || r.Ticker || "",
-      option_name: r.option_name || r.Option || "",
-      option_entry_price: r.option_entry_price || "",
-      entry_date: r.entry_date || "",
-      underlying_entry_price: r.underlying_entry_price || "",
-      contracts: r.contracts || "0"
-    }));
-
-    renderTable(rows);
-    setGlobalStatus(`✅ Loaded ${rows.length} rows.`, "good");
-  }catch(err){
-    $("posTbody").innerHTML = `<tr><td colspan="10" class="muted">❌ ${escapeHtml(String(err.message || err))}</td></tr>`;
-    setGlobalStatus(`❌ ${String(err.message || err)}`, "bad");
-  }
-}
-
-function promptToken(){
-  const tok = prompt("Paste your GitHub PAT (classic):");
-  if (!tok) return;
-  $("token").value = tok.trim();
-  saveSettings();
-}
-
-window.addEventListener("load", () => {
-  loadSettings();
-  loadPositions();
-
-  $("btnRefresh").addEventListener("click", loadPositions);
-  $("btnSaveSettings").addEventListener("click", saveSettings);
-  $("btnClearToken").addEventListener("click", clearToken);
-  $("btnToken").addEventListener("click", promptToken);
+  setCfg(cfg);
+  populateCfgUI();
+  setStatus("✅ Settings saved", "good");
 });
+
+$("btnClearCfg").addEventListener("click", ()=>{
+  localStorage.removeItem(CFG_KEY);
+  populateCfgUI();
+  setStatus("Cleared settings", "info");
+});
+
+$("btnSave").addEventListener("click", async ()=>{
+  if (!state.dirty){
+    setStatus("Nothing to save", "info");
+    return;
+  }
+  try{
+    setSaving(true);
+    await saveAllRows();
+    setStatus("✅ Save requested. Refresh in ~10–30s.", "good");
+    setDirty(false);
+  }catch(e){
+    setStatus(`❌ ${e.message || e}`, "bad");
+  }finally{
+    setSaving(false);
+  }
+});
+
+// init
+populateCfgUI();
+loadPositions();
