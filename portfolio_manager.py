@@ -1093,13 +1093,13 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
     plan_df = pd.DataFrame(plan_rows)
     plan_df.to_csv(PLAN_FILE, index=False)
 # Also save a copy into docs/ for GitHub Pages dashboard
-try:
-    os.makedirs(DOCS_DIR, exist_ok=True)
-    plan_df.to_csv(PLAN_DOCS_FILE, index=False)
-    report_lines.append(f"DIAG: Plan copied to docs: {PLAN_DOCS_FILE}")
-except Exception as e:
-    report_lines.append(f"DIAG: Failed to write docs plan copy: {e}")
-    
+    try:
+        os.makedirs(DOCS_DIR, exist_ok=True)
+        plan_df.to_csv(PLAN_DOCS_FILE, index=False)
+        report_lines.append(f"DIAG: Plan copied to docs: {PLAN_DOCS_FILE}")
+    except Exception as e:
+        report_lines.append(f"DIAG: Failed to write docs plan copy: {e}")
+        
     # ---- Plain text (stdout fallback)
     header_txt = []
     header_txt.append(f"PORTFOLIO MANAGER — {datetime.now().strftime('%Y-%m-%d')}")
