@@ -12,7 +12,6 @@
       --text:rgba(255,255,255,.92);
       --muted:rgba(255,255,255,.62);
       --muted2:rgba(255,255,255,.45);
-      --accent:#7c3aed;
       --ok:#22c55e;
       --warn:#f59e0b;
       --bad:#ef4444;
@@ -25,9 +24,10 @@
     *{ box-sizing:border-box; }
     body{
       margin:0; padding:22px;
-      background: radial-gradient(1200px 700px at 20% 0%, rgba(124,58,237,.25), transparent 55%),
-                  radial-gradient(900px 600px at 95% 12%, rgba(34,197,94,.18), transparent 50%),
-                  var(--bg);
+      background:
+        radial-gradient(1200px 700px at 20% 0%, rgba(124,58,237,.25), transparent 55%),
+        radial-gradient(900px 600px at 95% 12%, rgba(34,197,94,.18), transparent 50%),
+        var(--bg);
       color:var(--text);
       font-family: var(--font);
     }
@@ -35,6 +35,7 @@
     .top{ display:flex; gap:14px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; margin-bottom: 14px; }
     h1{ margin:0; font-size: 24px; letter-spacing:.2px; }
     .sub{ color:var(--muted); font-size:13px; margin-top:6px; }
+
     .panel{
       background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
       border:1px solid var(--border);
@@ -43,6 +44,7 @@
       overflow:hidden;
     }
     .toolbar{ padding:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+
     .chip{
       display:inline-flex; align-items:center; gap:8px;
       padding:7px 10px;
@@ -57,6 +59,7 @@
     .dot.ok{ background: var(--ok); box-shadow: 0 0 0 3px rgba(34,197,94,.15); }
     .dot.bad{ background: var(--bad); box-shadow: 0 0 0 3px rgba(239,68,68,.15); }
     .spacer{ flex:1; }
+
     .input{
       display:flex; align-items:center; gap:8px;
       padding:8px 10px;
@@ -72,6 +75,7 @@
       color: var(--text);
       font-size: 14px;
     }
+
     .btn{
       border:1px solid var(--border);
       background: rgba(255,255,255,.06);
@@ -126,7 +130,6 @@
 
     .note{ margin-top: 10px; color: var(--muted2); font-size: 12.5px; line-height: 1.4; }
 
-    /* commit log panel */
     .log{
       margin-top: 12px;
       border:1px solid var(--border);
@@ -137,7 +140,7 @@
       font-size: 12.5px;
       white-space: pre-wrap;
       overflow:auto;
-      max-height: 220px;
+      max-height: 240px;
       display:none;
     }
 
@@ -150,7 +153,7 @@
       z-index: 50;
     }
     .modal{
-      width: min(740px, 100%);
+      width: min(760px, 100%);
       border-radius: 16px;
       border:1px solid var(--border);
       background: rgba(15,23,42,.92);
@@ -188,6 +191,7 @@
       overflow:auto;
       margin:0;
       font-size: 12px;
+      white-space: pre-wrap;
     }
     .modalFooter{
       padding: 12px 14px;
@@ -203,7 +207,7 @@
   <div class="top">
     <div>
       <h1>Positions</h1>
-      <div class="sub">Edit in place • Sort • Add/Delete • Download • Commit to GitHub</div>
+      <div class="sub">Edit • Sort • Add/Delete • Download • Commit to GitHub (writes docs/positions.csv)</div>
     </div>
   </div>
 
@@ -219,7 +223,6 @@
         🔎 <input id="filter" placeholder="Filter rows…" />
       </div>
 
-      <!-- IMPORTANT: type="button" avoids iOS Safari weird submit/scroll behavior -->
       <button type="button" class="btn" id="addRowBtn">➕ Add row</button>
       <button type="button" class="btn danger" id="deleteRowsBtn" disabled>🗑️ Delete selected</button>
       <button type="button" class="btn" id="downloadBtn" disabled>⬇️ Download CSV</button>
@@ -233,8 +236,8 @@
   </div>
 
   <div class="note">
-    If commit fails, check the log panel below — it will show the exact GitHub API error (401/403/404/409 etc).
-    Branch protection can block direct writes.
+    If commit fails, the log below will show the exact GitHub API error (401/403/404/409 etc).
+    If your branch is protected, commit to a new branch (e.g. <b>web-edits</b>) then open a PR.
   </div>
 
   <div id="log" class="log"></div>
@@ -255,11 +258,11 @@
       <div class="row">
         <div class="field">
           <label>Repo owner</label>
-          <input id="owner" placeholder="owner" />
+          <input id="owner" placeholder="vibraniumtag-code" />
         </div>
         <div class="field">
           <label>Repo name</label>
-          <input id="repo" placeholder="repo" />
+          <input id="repo" placeholder="Stocks" />
         </div>
       </div>
 
@@ -267,7 +270,6 @@
         <div class="field">
           <label>Branch</label>
           <input id="branch" placeholder="main" />
-          <div class="help">If main is protected, try committing to a new branch like <b>web-edits</b> and open a PR.</div>
         </div>
         <div class="field">
           <label>Path to write</label>
@@ -304,6 +306,7 @@
   const downloadBtn = document.getElementById('downloadBtn');
   const commitBtn = document.getElementById('commitBtn');
   const resetBtn = document.getElementById('resetBtn');
+
   const statusEl = document.getElementById('status');
   const dotEl = document.getElementById('dot');
   const rowsMetaEl = document.getElementById('rowsMeta');
@@ -327,7 +330,8 @@
   };
   const clearLog = () => { logEl.textContent = ''; logEl.style.display = 'none'; };
 
-  const csvUrl = 'positions.csv?ts=' + Date.now(); // docs/positions.html → docs/positions.csv
+  const csvUrl = 'positions.csv?ts=' + Date.now(); // docs/position.html -> docs/positions.csv
+
   let headers = [];
   let data = [];
   let originalData = [];
@@ -345,6 +349,7 @@
     commitBtn.disabled = false;
   };
 
+  // --- CSV parsing ---
   const parseCSV = (text) => {
     const rows = [];
     let row = [], cur = '', inQuotes = false;
@@ -517,7 +522,7 @@
     clearLog();
     modalOverlay.style.display = 'flex';
 
-    // Auto-fill owner/repo from Pages URL: https://owner.github.io/repo/positions.html
+    // auto-fill from URL: https://owner.github.io/repo/position.html
     try{
       const ownerGuess = location.hostname.split('.')[0];
       const parts = location.pathname.split('/').filter(Boolean);
@@ -534,7 +539,8 @@
   modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
 
   const setResultError = (e) => {
-    commitResult.innerHTML = `<pre class="err">${String(e && e.stack ? e.stack : e)}</pre>`;
+    const msg = (e && e.stack) ? e.stack : String(e);
+    commitResult.innerHTML = `<pre class="err">${msg}</pre>`;
   };
   const setResultOk = (html) => { commitResult.innerHTML = html; };
 
@@ -549,10 +555,10 @@
   const getFileInfo = async ({owner, repo, path, branch, token}) => {
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}?ref=${encodeURIComponent(branch)}`;
     const res = await fetch(url, { headers: apiHeaders(token) });
-    const text = await res.text();
+    const raw = await res.text();
     let json = {};
-    try { json = JSON.parse(text); } catch {}
-    return { res, json, raw: text };
+    try { json = JSON.parse(raw); } catch {}
+    return { res, json, raw, url };
   };
 
   const putFile = async ({owner, repo, path, branch, token, message, contentBase64, sha}) => {
@@ -565,22 +571,27 @@
       headers: { ...apiHeaders(token), 'Content-Type':'application/json' },
       body: JSON.stringify(body)
     });
+
     const raw = await res.text();
     let json = {};
     try { json = JSON.parse(raw); } catch {}
     if (!res.ok) {
       const msg = json && json.message ? json.message : `HTTP ${res.status}`;
-      const details = raw ? `\nRaw: ${raw}` : '';
-      throw new Error(`Commit failed (${res.status}): ${msg}${details}`);
+      throw new Error(`Commit failed (${res.status}): ${msg}\nRaw: ${raw}`);
     }
     return json;
   };
 
+  // ✅ Safari-safe base64 encoding (chunked)
   const b64encodeUTF8 = (str) => {
     const bytes = new TextEncoder().encode(str);
-    let bin = '';
-    for (const b of bytes) bin += String.fromCharCode(b);
-    return btoa(bin);
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, chunk);
+    }
+    return btoa(binary);
   };
 
   testBtn.addEventListener('click', async () => {
@@ -591,20 +602,20 @@
       const branch = (branchEl.value.trim() || 'main');
       const path = (pathEl.value.trim() || 'docs/positions.csv');
       const token = tokenEl.value.trim();
-
       if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
 
       log(`TEST → owner=${owner} repo=${repo} branch=${branch} path=${path}`);
-      const { res, json, raw } = await getFileInfo({owner, repo, path, branch, token});
-      log(`TEST ← HTTP ${res.status}`);
-      if (!res.ok && res.status !== 404) {
-        throw new Error(`Test failed (${res.status}): ${json.message || raw}`);
+      const info = await getFileInfo({owner, repo, path, branch, token});
+      log(`TEST URL: ${info.url}`);
+      log(`TEST ← HTTP ${info.res.status}`);
+      if (!info.res.ok && info.res.status !== 404) {
+        throw new Error(`Test failed (${info.res.status}): ${info.json.message || info.raw}`);
       }
-      const sha = (res.status === 404) ? null : (json.sha || null);
-
+      const sha = (info.res.status === 404) ? null : (info.json.sha || null);
       setResultOk(`<div class="chip"><span class="dot ok"></span><span>Access OK • SHA: <b>${sha ? sha.slice(0,7) : '(new file)'}</b></span></div>`);
     }catch(e){
       setResultError(e);
+      log(`ERROR: ${e && e.message ? e.message : String(e)}`);
     }
   });
 
@@ -617,7 +628,6 @@
       const path = (pathEl.value.trim() || 'docs/positions.csv');
       const message = (msgEl.value.trim() || 'Update positions.csv (web)');
       const token = tokenEl.value.trim();
-
       if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
 
       log(`COMMIT → owner=${owner} repo=${repo} branch=${branch} path=${path}`);
@@ -636,7 +646,6 @@
       const result = await putFile({owner, repo, path, branch, token, message, contentBase64, sha});
       log(`WRITE ← OK`);
 
-      // Mark clean
       originalData = deepCopy(data);
       dirty = false;
       resetBtn.disabled = true;
@@ -654,9 +663,15 @@
       `);
     }catch(e){
       setResultError(e);
-      // keep log visible
+      log(`ERROR: ${e && e.message ? e.message : String(e)}`);
     }
   });
+
+  // enable / disable commit based on edits
+  const enableIfEdited = () => {
+    // commit allowed only after an edit
+    commitBtn.disabled = !dirty;
+  };
 
   // ===== Load =====
   (async () => {
@@ -680,6 +695,7 @@
       setStatus('ok', 'Loaded');
       downloadBtn.disabled = false;
       render();
+      enableIfEdited();
     }catch(e){
       setStatus('bad', 'Load failed');
       rowsMetaEl.textContent = '—';
@@ -689,6 +705,14 @@
       </td></tr></tbody>`;
     }
   })();
+
+  // Hook markDirty to update commit enable immediately
+  const _markDirty = markDirty;
+  // override by wrapping
+  // (This ensures commit button enables even if render timing differs)
+  // eslint-disable-next-line no-unused-vars
+  markDirty = () => { _markDirty(); enableIfEdited(); };
+
 })();
 </script>
 </body>
