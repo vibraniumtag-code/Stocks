@@ -1,14 +1,14 @@
-name: Nightly Turtle Scanner (Email Body)
+name: Nightly Turtle Scanner (Pretty HTML Email)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 2,15 * * *"  # 02:00 UTC daily
+    - cron: "0 2,15 * * *"  # 02:00 & 15:00 UTC
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    environment: GMAIL   # <-- remove this line if you're NOT using Environment secrets
+    environment: GMAIL   # remove if not using Environment secrets
 
     steps:
       - name: Checkout
@@ -26,7 +26,7 @@ jobs:
           if [ -f "Stocks/requirements.txt" ]; then pip install -r Stocks/requirements.txt; fi
           if [ -f "requirements.txt" ]; then pip install -r requirements.txt; fi
 
-      # ✅ Adjust this path to your script location:
+      # 🔹 Run your scanner (HTML + TXT output)
       - name: Run Turtle script
         run: |
           python TotalNarrow.py \
@@ -37,7 +37,8 @@ jobs:
             --emit-checklist 1 \
             --emit-html 1
 
-      - name: Email checklist (text body only)
+      # 🔹 Send PRETTY HTML email (with text fallback)
+      - name: Send HTML email
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -49,35 +50,44 @@ jobs:
           import os, glob, smtplib
           from email.message import EmailMessage
 
-          host = (os.environ.get("SMTP_HOST") or "").strip()
-          port_raw = (os.environ.get("SMTP_PORT") or "").strip()
-          user = (os.environ.get("SMTP_USER") or "").strip()
-          pw   = (os.environ.get("SMTP_PASS") or "").strip()
-          to   = (os.environ.get("EMAIL_TO")  or "").strip()
+          host = os.environ["SMTP_HOST"]
+          port = int(os.environ.get("SMTP_PORT", "587"))
+          user = os.environ["SMTP_USER"]
+          pw   = os.environ["SMTP_PASS"]
+          to   = os.environ["EMAIL_TO"]
 
-          missing = [k for k,v in [("SMTP_HOST",host),("SMTP_USER",user),("SMTP_PASS",pw),("EMAIL_TO",to)] if not v]
-          if missing:
-              raise SystemExit("Missing GitHub Secrets: " + ", ".join(missing))
+          # Locate latest outputs
+          html_files = sorted(glob.glob("*_email_*.html"))
+          txt_files  = sorted(glob.glob("*_checklist_*.txt"))
 
-          port = int(port_raw) if port_raw.isdigit() else 587
+          if not html_files:
+              raise SystemExit("❌ No HTML email file found")
 
-          txt_files = sorted(glob.glob("*_checklist_*.txt"))
+          with open(html_files[-1], "r", encoding="utf-8") as f:
+              html_body = f.read()
+
+          text_body = "Turtle Scanner ran successfully. HTML report attached."
           if txt_files:
               with open(txt_files[-1], "r", encoding="utf-8") as f:
-                  body = f.read()
-          else:
-              body = "Turtle Scanner ran, but no checklist file was found."
+                  text_body = f.read()
 
           msg = EmailMessage()
-          msg["Subject"] = "Scanner – Tomorrow’s Entries"
-          msg["From"] = f"Scanner <{user}>"
+          msg["Subject"] = "🐢 Turtle Scanner — Tomorrow’s Entries"
+          msg["From"] = f"Turtle Scanner <{user}>"
           msg["To"] = to
-          msg.set_content(body)
+
+          # Plain-text fallback (kept minimal)
+          msg.set_content(text_body)
+
+          # HTML version (THIS is what clients render)
+          msg.add_alternative(html_body, subtype="html")
 
           with smtplib.SMTP(host, port) as s:
+              s.ehlo()
               s.starttls()
+              s.ehlo()
               s.login(user, pw)
               s.send_message(msg)
 
-          print("Email sent (text-only).")
+          print("✅ Pretty HTML email sent:", html_files[-1])
           PY
