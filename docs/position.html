@@ -1,25 +1,17 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Positions</title>
   <style>
     :root{
-      --bg:#0b1020;
-      --panel:#0f172a;
-      --border:rgba(255,255,255,.08);
-      --text:rgba(255,255,255,.92);
-      --muted:rgba(255,255,255,.62);
-      --muted2:rgba(255,255,255,.45);
-      --ok:#22c55e;
-      --warn:#f59e0b;
-      --bad:#ef4444;
-      --chip:rgba(255,255,255,.07);
-      --focus:rgba(124,58,237,.35);
-      --shadow: 0 14px 50px rgba(0,0,0,.45);
-      --radius:14px;
+      --bg:#0b1020; --panel:#0f172a; --border:rgba(255,255,255,.08);
+      --text:rgba(255,255,255,.92); --muted:rgba(255,255,255,.62);
+      --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --chip:rgba(255,255,255,.07);
+      --shadow: 0 14px 50px rgba(0,0,0,.45); --radius:14px;
       --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      --focus: rgba(124,58,237,.35);
     }
     *{ box-sizing:border-box; }
     body{
@@ -29,14 +21,13 @@
         radial-gradient(900px 600px at 95% 12%, rgba(34,197,94,.18), transparent 50%),
         var(--bg);
       color:var(--text);
-      font-family: var(--font);
+      font-family:var(--font);
     }
-    .container{ max-width: 1200px; margin:0 auto; }
-    .top{ display:flex; gap:14px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; margin-bottom: 14px; }
-    h1{ margin:0; font-size: 24px; letter-spacing:.2px; }
-    .sub{ color:var(--muted); font-size:13px; margin-top:6px; }
-
+    .container{ max-width:1200px; margin:0 auto; }
+    h1{ margin:0; font-size:24px; }
+    .sub{ margin-top:6px; color:var(--muted); font-size:13px; }
     .panel{
+      margin-top:14px;
       background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
       border:1px solid var(--border);
       border-radius: var(--radius);
@@ -44,38 +35,21 @@
       overflow:hidden;
     }
     .toolbar{ padding:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-
     .chip{
       display:inline-flex; align-items:center; gap:8px;
-      padding:7px 10px;
-      border:1px solid var(--border);
-      background: var(--chip);
-      border-radius:999px;
-      font-size: 13px;
-      color: var(--muted);
-      user-select:none;
+      padding:7px 10px; border:1px solid var(--border);
+      background: var(--chip); border-radius:999px; font-size:13px; color:var(--muted);
     }
-    .dot{ width:8px; height:8px; border-radius:999px; background: var(--warn); box-shadow: 0 0 0 3px rgba(245,158,11,.15); }
-    .dot.ok{ background: var(--ok); box-shadow: 0 0 0 3px rgba(34,197,94,.15); }
-    .dot.bad{ background: var(--bad); box-shadow: 0 0 0 3px rgba(239,68,68,.15); }
+    .dot{ width:8px; height:8px; border-radius:999px; background:var(--warn); box-shadow:0 0 0 3px rgba(245,158,11,.15); }
+    .dot.ok{ background:var(--ok); box-shadow:0 0 0 3px rgba(34,197,94,.15); }
+    .dot.bad{ background:var(--bad); box-shadow:0 0 0 3px rgba(239,68,68,.15); }
     .spacer{ flex:1; }
-
     .input{
       display:flex; align-items:center; gap:8px;
-      padding:8px 10px;
-      border:1px solid var(--border);
-      background: rgba(0,0,0,.18);
-      border-radius: 12px;
-      min-width: 260px;
+      padding:8px 10px; border:1px solid var(--border);
+      background: rgba(0,0,0,.18); border-radius:12px; min-width:260px;
     }
-    .input input{
-      width:100%;
-      border:0; outline:none;
-      background: transparent;
-      color: var(--text);
-      font-size: 14px;
-    }
-
+    .input input{ width:100%; border:0; outline:none; background:transparent; color:var(--text); font-size:14px; }
     .btn{
       border:1px solid var(--border);
       background: rgba(255,255,255,.06);
@@ -86,219 +60,157 @@
       font-weight:600;
       font-size: 13px;
       display:inline-flex; align-items:center; gap:8px;
-      transition: transform .06s ease, background .12s ease, border-color .12s ease;
       user-select:none;
     }
     .btn:hover{ background: rgba(255,255,255,.10); border-color: rgba(255,255,255,.14); }
-    .btn:active{ transform: translateY(1px); }
     .btn:disabled{ opacity:.45; cursor:not-allowed; }
     .btn.primary{ border-color: rgba(124,58,237,.35); background: rgba(124,58,237,.20); }
-    .btn.primary:hover{ background: rgba(124,58,237,.26); }
     .btn.success{ border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.18); }
     .btn.danger{ border-color: rgba(239,68,68,.35); background: rgba(239,68,68,.16); }
 
     .tableWrap{ overflow:auto; border-top:1px solid var(--border); }
-    table{ width:100%; border-collapse: collapse; min-width: 980px; }
+    table{ width:100%; border-collapse:collapse; min-width:980px; }
     thead th{
-      position: sticky; top: 0; z-index: 2;
-      background: rgba(10,14,28,.92);
-      backdrop-filter: blur(8px);
+      position:sticky; top:0; z-index:2;
+      background: rgba(10,14,28,.92); backdrop-filter: blur(8px);
       border-bottom:1px solid var(--border);
-      color: rgba(255,255,255,.78);
-      text-align:left;
-      font-size: 12px;
-      letter-spacing: .35px;
-      padding: 10px 10px;
-      cursor:pointer;
-      user-select:none;
+      color: rgba(255,255,255,.78); text-align:left;
+      font-size:12px; letter-spacing:.35px;
+      padding:10px; cursor:pointer; user-select:none;
     }
-    thead th:first-child{ cursor: default; }
+    thead th:first-child{ cursor:default; }
     tbody td{
       border-bottom:1px solid rgba(255,255,255,.06);
-      padding: 9px 10px;
-      font-size: 13px;
-      color: rgba(255,255,255,.88);
-      white-space: nowrap;
+      padding:9px 10px; font-size:13px;
+      color: rgba(255,255,255,.88); white-space:nowrap;
     }
     tbody tr:hover td{ background: rgba(255,255,255,.03); }
-    td[contenteditable="true"]{ outline:none; border-radius: 8px; }
-    td[contenteditable="true"]:focus{
-      box-shadow: 0 0 0 3px var(--focus);
-      background: rgba(124,58,237,.10);
-    }
+    td[contenteditable="true"]{ outline:none; border-radius:8px; }
+    td[contenteditable="true"]:focus{ box-shadow:0 0 0 3px var(--focus); background: rgba(124,58,237,.10); }
     td.edited{ background: rgba(245,158,11,.10); }
 
-    .note{ margin-top: 10px; color: var(--muted2); font-size: 12.5px; line-height: 1.4; }
-
+    .note{ margin-top:10px; color: rgba(255,255,255,.45); font-size:12.5px; line-height:1.4; }
     .log{
-      margin-top: 12px;
-      border:1px solid var(--border);
-      background: rgba(0,0,0,.18);
-      border-radius: 12px;
-      padding: 10px 12px;
-      color: rgba(255,255,255,.85);
-      font-size: 12.5px;
-      white-space: pre-wrap;
-      overflow:auto;
-      max-height: 260px;
-      display:none;
+      margin-top:12px; display:none;
+      border:1px solid var(--border); background: rgba(0,0,0,.18);
+      border-radius:12px; padding:10px 12px;
+      white-space:pre-wrap; overflow:auto; max-height:260px;
+      font-size:12.5px; color: rgba(255,255,255,.85);
     }
 
-    /* modal */
-    .modalOverlay{
-      position:fixed; inset:0;
-      background: rgba(0,0,0,.55);
-      display:none; align-items:center; justify-content:center;
-      padding: 18px;
-      z-index: 50;
-    }
+    /* Modal */
+    .overlay{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; padding:18px;
+      background: rgba(0,0,0,.55); z-index:50; }
     .modal{
-      width: min(760px, 100%);
-      border-radius: 16px;
-      border:1px solid var(--border);
-      background: rgba(15,23,42,.92);
-      backdrop-filter: blur(10px);
-      box-shadow: var(--shadow);
-      overflow:hidden;
+      width:min(720px,100%);
+      border-radius:16px; border:1px solid var(--border);
+      background: rgba(15,23,42,.92); backdrop-filter: blur(10px);
+      box-shadow: var(--shadow); overflow:hidden;
     }
-    .modalHeader{
-      padding: 14px 14px 10px;
-      display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
-      border-bottom: 1px solid var(--border);
-    }
-    .modalHeader h2{ margin:0; font-size: 16px; }
-    .modalBody{ padding: 14px; display:grid; gap:12px; }
-    .row{ display:grid; gap:8px; grid-template-columns: 1fr 1fr; }
+    .mh{ padding:14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; gap:10px; }
+    .mh h2{ margin:0; font-size:16px; }
+    .mb{ padding:14px; display:grid; gap:12px; }
+    .row{ display:grid; gap:8px; grid-template-columns:1fr 1fr; }
     .field{ display:grid; gap:6px; }
-    label{ font-size: 12px; color: var(--muted); }
+    label{ font-size:12px; color: rgba(255,255,255,.62); }
     .field input{
-      width:100%;
-      border:1px solid var(--border);
-      background: rgba(0,0,0,.18);
-      color: var(--text);
-      border-radius: 12px;
-      padding: 10px;
-      outline:none;
-      font-size: 13px;
+      padding:10px; border-radius:12px; border:1px solid var(--border);
+      background: rgba(0,0,0,.18); color: var(--text); outline:none; font-size:13px;
     }
-    .help{ color: var(--muted2); font-size: 12px; line-height: 1.35; }
+    .mf{ padding:12px 14px; border-top:1px solid var(--border); display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap; }
     pre.err{
       background: rgba(239,68,68,.10);
-      border: 1px solid rgba(239,68,68,.22);
-      color: rgba(255,255,255,.9);
-      padding: 10px;
-      border-radius: 12px;
-      overflow:auto;
-      margin:0;
-      font-size: 12px;
-      white-space: pre-wrap;
+      border:1px solid rgba(239,68,68,.22);
+      padding:10px; border-radius:12px; margin:0;
+      color: rgba(255,255,255,.9); font-size:12px; white-space:pre-wrap; overflow:auto;
     }
-    .modalFooter{
-      padding: 12px 14px;
-      border-top: 1px solid var(--border);
-      display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap;
-    }
-    a{ color:#c4b5fd; }
   </style>
 </head>
-
 <body>
-<div class="container">
-  <div class="top">
-    <div>
-      <h1>Positions</h1>
-      <div class="sub">Edit • Sort • Add/Delete • Download • Commit to GitHub (writes docs/positions.csv)</div>
+  <div class="container">
+    <h1>Positions</h1>
+    <div class="sub">Edit inline • Download • Commit to GitHub (writes docs/positions.csv)</div>
+
+    <div class="panel">
+      <div class="toolbar">
+        <span class="chip"><span id="dot" class="dot"></span><span id="status">Loading…</span></span>
+        <span class="chip">Rows: <strong id="rowsMeta">—</strong></span>
+        <span class="chip">Source: <strong>docs/positions.csv</strong></span>
+
+        <div class="spacer"></div>
+
+        <div class="input">🔎 <input id="filter" placeholder="Filter rows…"></div>
+
+        <button type="button" class="btn" id="addRowBtn">➕ Add</button>
+        <button type="button" class="btn danger" id="deleteRowsBtn" disabled>🗑️ Delete</button>
+        <button type="button" class="btn" id="downloadBtn" disabled>⬇️ Download</button>
+        <button type="button" class="btn primary" id="commitBtn" disabled>✅ Commit</button>
+        <button type="button" class="btn" id="resetBtn" disabled>↩️ Reset</button>
+      </div>
+
+      <div class="tableWrap">
+        <table id="tbl"></table>
+      </div>
     </div>
+
+    <div class="note">
+      If commit fails, the log will show the real error (401/403/409 etc). If main is protected, use branch <b>web-edits</b> and PR.
+    </div>
+    <div id="log" class="log"></div>
   </div>
 
-  <div class="panel">
-    <div class="toolbar">
-      <span class="chip"><span id="dot" class="dot"></span><span id="status">Loading…</span></span>
-      <span class="chip">Rows: <strong id="rowsMeta">—</strong></span>
-      <span class="chip">Source: <strong>docs/positions.csv</strong></span>
-
-      <div class="spacer"></div>
-
-      <div class="input">
-        🔎 <input id="filter" placeholder="Filter rows…" />
+  <!-- Modal -->
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <div class="mh">
+        <div>
+          <h2>Commit to GitHub</h2>
+          <div class="note" style="margin:6px 0 0;">Owner/repo are prefilled for vibraniumtag-code/Stocks.</div>
+        </div>
+        <button type="button" class="btn" id="closeBtn">✖</button>
       </div>
-
-      <button type="button" class="btn" id="addRowBtn">➕ Add row</button>
-      <button type="button" class="btn danger" id="deleteRowsBtn" disabled>🗑️ Delete selected</button>
-      <button type="button" class="btn" id="downloadBtn" disabled>⬇️ Download CSV</button>
-      <button type="button" class="btn primary" id="commitBtn" disabled>✅ Commit to GitHub</button>
-      <button type="button" class="btn" id="resetBtn" disabled>↩️ Reset</button>
-    </div>
-
-    <div class="tableWrap">
-      <table id="tbl"></table>
+      <div class="mb">
+        <div class="row">
+          <div class="field">
+            <label>Owner</label>
+            <input id="owner" value="vibraniumtag-code">
+          </div>
+          <div class="field">
+            <label>Repo</label>
+            <input id="repo" value="Stocks">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Branch</label>
+            <input id="branch" value="main">
+          </div>
+          <div class="field">
+            <label>Path</label>
+            <input id="path" value="docs/positions.csv">
+          </div>
+        </div>
+        <div class="field">
+          <label>Commit message</label>
+          <input id="message" value="Update positions.csv (web)">
+        </div>
+        <div class="field">
+          <label>Token (fine-grained PAT, Contents: Read & Write)</label>
+          <input id="token" type="password" placeholder="github_pat_...">
+        </div>
+        <div id="result"></div>
+      </div>
+      <div class="mf">
+        <button type="button" class="btn" id="testBtn">🔍 Test</button>
+        <button type="button" class="btn success" id="commitNowBtn">✅ Commit now</button>
+      </div>
     </div>
   </div>
-
-  <div class="note">
-    If commit fails, the log below will show the exact GitHub API error (401/403/404/409 etc).
-    If your branch is protected, commit to a new branch (e.g. <b>web-edits</b>) then open a PR.
-  </div>
-
-  <div id="log" class="log"></div>
-</div>
-
-<!-- Commit Modal -->
-<div class="modalOverlay" id="modalOverlay">
-  <div class="modal">
-    <div class="modalHeader">
-      <div>
-        <h2>Commit updated CSV to GitHub</h2>
-        <div class="help">Overwrites <b>docs/positions.csv</b> on the selected branch.</div>
-      </div>
-      <button type="button" class="btn" id="closeModalBtn">✖</button>
-    </div>
-
-    <div class="modalBody">
-      <div class="row">
-        <div class="field">
-          <label>Repo owner</label>
-          <input id="owner" placeholder="vibraniumtag-code" />
-        </div>
-        <div class="field">
-          <label>Repo name</label>
-          <input id="repo" placeholder="Stocks" />
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="field">
-          <label>Branch</label>
-          <input id="branch" placeholder="main" />
-        </div>
-        <div class="field">
-          <label>Path to write</label>
-          <input id="path" value="docs/positions.csv" />
-        </div>
-      </div>
-
-      <div class="field">
-        <label>Commit message</label>
-        <input id="message" value="Update positions.csv (web)" />
-      </div>
-
-      <div class="field">
-        <label>GitHub token (fine-grained PAT with Contents: Read & Write)</label>
-        <input id="token" type="password" placeholder="github_pat_..." />
-      </div>
-
-      <div id="commitResult"></div>
-    </div>
-
-    <div class="modalFooter">
-      <button type="button" class="btn" id="testBtn">🔍 Test access</button>
-      <button type="button" class="btn success" id="doCommitBtn">✅ Commit now</button>
-    </div>
-  </div>
-</div>
 
 <script>
 (() => {
+  const csvUrl = 'positions.csv?ts=' + Date.now(); // same folder
+
   const tbl = document.getElementById('tbl');
   const filterEl = document.getElementById('filter');
   const addRowBtn = document.getElementById('addRowBtn');
@@ -311,26 +223,19 @@
   const dotEl = document.getElementById('dot');
   const rowsMetaEl = document.getElementById('rowsMeta');
 
-  const modalOverlay = document.getElementById('modalOverlay');
-  const closeModalBtn = document.getElementById('closeModalBtn');
+  const logEl = document.getElementById('log');
+  const overlay = document.getElementById('overlay');
+  const closeBtn = document.getElementById('closeBtn');
+  const testBtn = document.getElementById('testBtn');
+  const commitNowBtn = document.getElementById('commitNowBtn');
+
   const ownerEl = document.getElementById('owner');
   const repoEl = document.getElementById('repo');
   const branchEl = document.getElementById('branch');
   const pathEl = document.getElementById('path');
   const msgEl = document.getElementById('message');
   const tokenEl = document.getElementById('token');
-  const testBtn = document.getElementById('testBtn');
-  const doCommitBtn = document.getElementById('doCommitBtn');
-  const commitResult = document.getElementById('commitResult');
-
-  const logEl = document.getElementById('log');
-  const log = (s) => {
-    logEl.style.display = 'block';
-    logEl.textContent += (logEl.textContent ? "\n" : "") + s;
-  };
-  const clearLog = () => { logEl.textContent = ''; logEl.style.display = 'none'; };
-
-  const csvUrl = 'positions.csv?ts=' + Date.now(); // docs/position.html -> docs/positions.csv
+  const resultEl = document.getElementById('result');
 
   let headers = [];
   let data = [];
@@ -338,11 +243,27 @@
   let sortState = { col: -1, dir: 1 };
   let dirty = false;
 
+  function log(s){
+    logEl.style.display = 'block';
+    logEl.textContent += (logEl.textContent ? "\n" : "") + s;
+  }
+  function clearLog(){
+    logEl.textContent = '';
+    logEl.style.display = 'none';
+  }
+
   function setStatus(kind, text){
     statusEl.textContent = text;
     dotEl.className = 'dot ' + (kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : '');
   }
-  const deepCopy = (x) => JSON.parse(JSON.stringify(x));
+
+  function setError(e){
+    const msg = (e && e.stack) ? e.stack : String(e);
+    resultEl.innerHTML = `<pre class="err">${msg}</pre>`;
+  }
+  function setOk(html){ resultEl.innerHTML = html; }
+
+  function deepCopy(x){ return JSON.parse(JSON.stringify(x)); }
 
   function markDirty(){
     dirty = true;
@@ -350,7 +271,6 @@
     commitBtn.disabled = false;
   }
 
-  // --- CSV parsing ---
   function parseCSV(text){
     const rows = [];
     let row = [], cur = '', inQuotes = false;
@@ -374,7 +294,7 @@
 
   function csvEscape(s){
     s = (s ?? '').toString();
-    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g,'""')}"`;
     return s;
   }
 
@@ -382,15 +302,14 @@
     const lines = [];
     lines.push(headers.map(csvEscape).join(','));
     for (const r of rows){
-      const rr = headers.map((_, i) => csvEscape(r[i] ?? ''));
-      lines.push(rr.join(','));
+      lines.push(headers.map((_, i) => csvEscape(r[i] ?? '')).join(','));
     }
     return lines.join('\n') + '\n';
   }
 
   function updateDeleteState(){
-    const anyChecked = tbl.querySelectorAll('tbody input[type="checkbox"]:checked').length > 0;
-    deleteRowsBtn.disabled = !anyChecked;
+    const any = tbl.querySelectorAll('tbody input[type="checkbox"]:checked').length > 0;
+    deleteRowsBtn.disabled = !any;
   }
 
   function sortBy(colIdx, dir){
@@ -456,13 +375,11 @@
         td.contentEditable = "true";
         td.spellcheck = false;
         td.textContent = (data[rowIdx][colIdx] ?? '').toString();
-
         td.addEventListener('input', () => {
           data[rowIdx][colIdx] = td.textContent;
           td.classList.add('edited');
           markDirty();
         });
-
         tr.appendChild(td);
       });
 
@@ -475,7 +392,57 @@
     updateDeleteState();
   }
 
-  // ===== Actions =====
+  // Safari-safe base64 (chunked)
+  function b64encodeUTF8(str){
+    const bytes = new TextEncoder().encode(str);
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i=0; i<bytes.length; i += chunkSize){
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, chunk);
+    }
+    return btoa(binary);
+  }
+
+  function apiHeaders(token){
+    return {
+      'Accept': 'application/vnd.github+json',
+      'Authorization': `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28'
+    };
+  }
+  const ghPath = (p) => encodeURIComponent(p).replace(/%2F/g,'/');
+
+  async function getFileInfo({owner, repo, path, branch, token}){
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}?ref=${encodeURIComponent(branch)}`;
+    const res = await fetch(url, { headers: apiHeaders(token) });
+    const raw = await res.text();
+    let json = {};
+    try { json = JSON.parse(raw); } catch {}
+    return { res, raw, json, url };
+  }
+
+  async function putFile({owner, repo, path, branch, token, message, contentBase64, sha}){
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}`;
+    const body = { message, content: contentBase64, branch };
+    if (sha) body.sha = sha;
+
+    const res = await fetch(url, {
+      method:'PUT',
+      headers: { ...apiHeaders(token), 'Content-Type':'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    const raw = await res.text();
+    let json = {};
+    try { json = JSON.parse(raw); } catch {}
+    if (!res.ok){
+      throw new Error(`Commit failed (${res.status}): ${json.message || raw}\nRaw: ${raw}`);
+    }
+    return json;
+  }
+
+  // Buttons
   filterEl.addEventListener('input', render);
 
   addRowBtn.addEventListener('click', () => {
@@ -517,130 +484,60 @@
     render();
   });
 
-  // ===== Modal controls =====
-  function openModal(){
-    commitResult.innerHTML = '';
+  commitBtn.addEventListener('click', () => {
+    resultEl.innerHTML = '';
     clearLog();
-    modalOverlay.style.display = 'flex';
-
-    // auto-fill from URL: https://owner.github.io/repo/position.html
-    try{
-      const ownerGuess = location.hostname.split('.')[0];
-      const parts = location.pathname.split('/').filter(Boolean);
-      const repoGuess = parts[0] || '';
-      if (!ownerEl.value) ownerEl.value = ownerGuess || '';
-      if (!repoEl.value) repoEl.value = repoGuess;
-      if (!branchEl.value) branchEl.value = 'main';
-    }catch(e){}
-  }
-  function closeModal(){ modalOverlay.style.display = 'none'; }
-
-  commitBtn.addEventListener('click', openModal);
-  closeModalBtn.addEventListener('click', closeModal);
-  modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
-
-  function setResultError(e){
-    const msg = (e && e.stack) ? e.stack : String(e);
-    commitResult.innerHTML = `<pre class="err">${msg}</pre>`;
-  }
-  function setResultOk(html){ commitResult.innerHTML = html; }
-
-  function apiHeaders(token){
-    return {
-      'Accept': 'application/vnd.github+json',
-      'Authorization': `Bearer ${token}`,
-      'X-GitHub-Api-Version': '2022-11-28'
-    };
-  }
-  const ghPath = (p) => encodeURIComponent(p).replace(/%2F/g,'/');
-
-  async function getFileInfo({owner, repo, path, branch, token}){
-    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}?ref=${encodeURIComponent(branch)}`;
-    const res = await fetch(url, { headers: apiHeaders(token) });
-    const raw = await res.text();
-    let json = {};
-    try { json = JSON.parse(raw); } catch {}
-    return { res, json, raw, url };
-  }
-
-  async function putFile({owner, repo, path, branch, token, message, contentBase64, sha}){
-    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}`;
-    const body = { message, content: contentBase64, branch };
-    if (sha) body.sha = sha;
-
-    const res = await fetch(url, {
-      method: 'PUT',
-      headers: { ...apiHeaders(token), 'Content-Type':'application/json' },
-      body: JSON.stringify(body)
-    });
-
-    const raw = await res.text();
-    let json = {};
-    try { json = JSON.parse(raw); } catch {}
-    if (!res.ok) {
-      const msg = json && json.message ? json.message : `HTTP ${res.status}`;
-      throw new Error(`Commit failed (${res.status}): ${msg}\nRaw: ${raw}`);
-    }
-    return json;
-  }
-
-  // ✅ Safari-safe base64 encoding (chunked)
-  function b64encodeUTF8(str){
-    const bytes = new TextEncoder().encode(str);
-    let binary = '';
-    const chunkSize = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      const chunk = bytes.subarray(i, i + chunkSize);
-      binary += String.fromCharCode.apply(null, chunk);
-    }
-    return btoa(binary);
-  }
+    overlay.style.display = 'flex';
+  });
+  closeBtn.addEventListener('click', () => overlay.style.display = 'none');
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.style.display = 'none'; });
 
   testBtn.addEventListener('click', async () => {
     try{
       clearLog();
       const owner = ownerEl.value.trim();
       const repo = repoEl.value.trim();
-      const branch = (branchEl.value.trim() || 'main');
-      const path = (pathEl.value.trim() || 'docs/positions.csv');
+      const branch = branchEl.value.trim() || 'main';
+      const path = pathEl.value.trim() || 'docs/positions.csv';
       const token = tokenEl.value.trim();
       if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
 
-      log(`TEST → owner=${owner} repo=${repo} branch=${branch} path=${path}`);
+      log(`TEST → ${owner}/${repo} branch=${branch} path=${path}`);
       const info = await getFileInfo({owner, repo, path, branch, token});
       log(`TEST URL: ${info.url}`);
       log(`TEST ← HTTP ${info.res.status}`);
-      if (!info.res.ok && info.res.status !== 404) {
+
+      if (!info.res.ok && info.res.status !== 404){
         throw new Error(`Test failed (${info.res.status}): ${info.json.message || info.raw}`);
       }
-      const sha = (info.res.status === 404) ? null : (info.json.sha || null);
-      setResultOk(`<div class="chip"><span class="dot ok"></span><span>Access OK • SHA: <b>${sha ? sha.slice(0,7) : '(new file)'}</b></span></div>`);
+      const sha = info.res.status === 404 ? null : (info.json.sha || null);
+      setOk(`<span class="chip"><span class="dot ok"></span> Access OK • SHA: <b>${sha ? sha.slice(0,7) : '(new file)'}</b></span>`);
     }catch(e){
-      setResultError(e);
-      log(`ERROR: ${e && e.message ? e.message : String(e)}`);
+      setError(e);
+      log(`ERROR: ${e.message || String(e)}`);
     }
   });
 
-  doCommitBtn.addEventListener('click', async () => {
+  commitNowBtn.addEventListener('click', async () => {
     try{
       clearLog();
       const owner = ownerEl.value.trim();
       const repo = repoEl.value.trim();
-      const branch = (branchEl.value.trim() || 'main');
-      const path = (pathEl.value.trim() || 'docs/positions.csv');
-      const message = (msgEl.value.trim() || 'Update positions.csv (web)');
+      const branch = branchEl.value.trim() || 'main';
+      const path = pathEl.value.trim() || 'docs/positions.csv';
+      const message = msgEl.value.trim() || 'Update positions.csv (web)';
       const token = tokenEl.value.trim();
       if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
 
-      log(`COMMIT → owner=${owner} repo=${repo} branch=${branch} path=${path}`);
-      setResultOk(`<div class="chip"><span class="dot"></span><span>Committing…</span></div>`);
+      log(`COMMIT → ${owner}/${repo} branch=${branch} path=${path}`);
+      setOk(`<span class="chip"><span class="dot"></span> Committing…</span>`);
 
       const info = await getFileInfo({owner, repo, path, branch, token});
       log(`READ ← HTTP ${info.res.status}`);
-      if (!info.res.ok && info.res.status !== 404) {
+      if (!info.res.ok && info.res.status !== 404){
         throw new Error(`Cannot read target file (${info.res.status}): ${info.json.message || info.raw}`);
       }
-      const sha = (info.res.status === 404) ? null : (info.json.sha || null);
+      const sha = info.res.status === 404 ? null : (info.json.sha || null);
 
       const csv = toCSV(headers, data);
       const contentBase64 = b64encodeUTF8(csv);
@@ -654,31 +551,31 @@
       commitBtn.disabled = true;
 
       const commitUrl = result?.commit?.html_url || '';
-      const contentUrl = result?.content?.html_url || '';
+      const fileUrl = result?.content?.html_url || '';
 
-      setResultOk(`
-        <div class="chip"><span class="dot ok"></span><span><b>Committed successfully.</b></span></div>
-        <div class="help">
+      setOk(`
+        <span class="chip"><span class="dot ok"></span> <b>Committed</b></span>
+        <div class="note" style="margin-top:8px">
           ${commitUrl ? `Commit: <a href="${commitUrl}" target="_blank" rel="noreferrer">open</a><br>` : ''}
-          ${contentUrl ? `File: <a href="${contentUrl}" target="_blank" rel="noreferrer">open</a>` : ''}
+          ${fileUrl ? `File: <a href="${fileUrl}" target="_blank" rel="noreferrer">open</a>` : ''}
         </div>
       `);
     }catch(e){
-      setResultError(e);
-      log(`ERROR: ${e && e.message ? e.message : String(e)}`);
+      setError(e);
+      log(`ERROR: ${e.message || String(e)}`);
     }
   });
 
-  // ===== Load =====
+  // Load CSV
   (async () => {
     try{
-      setStatus('warn', 'Loading…');
+      setStatus('warn','Loading…');
       const res = await fetch(csvUrl, { cache:'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status} while fetching positions.csv`);
       const text = await res.text();
 
       const rows = parseCSV(text);
-      if (!rows.length) throw new Error('CSV loaded but empty.');
+      if (!rows.length) throw new Error('CSV empty.');
 
       headers = rows[0].map(x => x.trim());
       data = rows.slice(1).map(r => {
@@ -688,16 +585,12 @@
       });
       originalData = deepCopy(data);
 
-      setStatus('ok', 'Loaded');
+      setStatus('ok','Loaded');
       downloadBtn.disabled = false;
       render();
     }catch(e){
-      setStatus('bad', 'Load failed');
-      rowsMetaEl.textContent = '—';
-      tbl.innerHTML = `<tbody><tr><td style="padding:14px;color:rgba(255,255,255,.8)">
-        Failed to load CSV. Check that <b>docs/positions.csv</b> exists and you’re using the GitHub Pages URL.
-        <br><br><span style="color:rgba(255,255,255,.6)">${String(e)}</span>
-      </td></tr></tbody>`;
+      setStatus('bad','Load failed');
+      tbl.innerHTML = `<tbody><tr><td style="padding:14px">Load failed: ${String(e)}</td></tr></tbody>`;
     }
   })();
 })();
