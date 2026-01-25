@@ -1,0 +1,40 @@
+name: Mirror positions.csv to docs
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - positions.csv
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Copy positions.csv into docs
+        run: |
+          mkdir -p docs
+          cp positions.csv docs/positions.csv
+
+      - name: Commit mirror if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add docs/positions.csv
+
+          if git diff --cached --quiet; then
+            echo "No changes to mirror."
+            exit 0
+          fi
+
+          git commit -m "Mirror positions.csv to docs [auto]"
+          git push
