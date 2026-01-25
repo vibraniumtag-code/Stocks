@@ -5,15 +5,23 @@ unified_turtle_entries_only.py
 Nightly runner:
 - outputs ONLY fresh entries for tomorrow (no ledger)
 - prints a ready-to-trade checklist
-- emits a clean HTML email view (table + checklist + command + optional script section)
+- saves CSV + TXT checklist
+- sends a PRETTY HTML EMAIL (with plain-text fallback)
+- optionally saves the same HTML to a file
 
 Usage:
   python unified_turtle_entries_only.py --system 1 --allow-shorts 1 --top 300 \
-    --save entries_tomorrow.csv --emit-checklist 1 --emit-html 1
+    --save entries_tomorrow.csv --emit-checklist 1 --emit-html 1 --send-email 1
+
+GitHub Secrets / env vars (SMTP):
+  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
+
+Optional env:
+  EMAIL_MODE=always | entries_only   (default: always)
 
 Notes:
-- HTML is generated to a file by default (next to the CSV). If you want to EMAIL it, wire it to SMTP like your exit_check.py.
-- Works best with wide emails; the entries table is horizontally scrollable.
+- Email-safe HTML (inline styles).
+- Entries table is horizontally scrollable on mobile.
 """
 
 import os, re, argparse, html
@@ -27,6 +35,11 @@ try:
     import yfinance as yf
 except Exception:
     yf = None
+
+import smtplib
+import ssl
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 
 # ---------------------- Config defaults ----------------------
@@ -52,6 +65,16 @@ FALLBACK_UNIVERSE = [
     "PEP","COST","AVGO","LLY","ORCL","NKE","ADBE","CRM","NFLX","INTC",
     "AMD","QCOM","TXN","CSCO","UPS","CAT","GE","HON","IBM","AXP"
 ]
+
+# ---------------------- SMTP / EMAIL ----------------------
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT_RAW = (os.getenv("SMTP_PORT") or "").strip()
+SMTP_PORT = int(SMTP_PORT_RAW) if SMTP_PORT_RAW.isdigit() else 0
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
+EMAIL_TO = os.getenv("EMAIL_TO", "").strip()
+
+EMAIL_MODE = os.getenv("EMAIL_MODE", "always").strip().lower()  # always | entries_only
 
 
 # ---------------------- Helpers ----------------------
@@ -153,6 +176,33 @@ def select_option(options_df: pd.DataFrame, spot: float, is_call: bool, target_d
 def build_universe(top: int) -> List[str]:
     top = max(1, min(top, len(FALLBACK_UNIVERSE)))
     return FALLBACK_UNIVERSE[:top]
+
+
+def smtp_ready() -> bool:
+    return all([SMTP_HOST, SMTP_PORT > 0, SMTP_USER, SMTP_PASS, EMAIL_TO])
+
+
+def send_pretty_email(subject: str, html_body: str, text_body: str) -> None:
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["To"] = EMAIL_TO
+    msg["From"] = f"Turtle Scanner <{SMTP_USER}>"
+
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    if SMTP_PORT == 465:
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as server:
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
 
 
 # ---------------------- Main pipeline ----------------------
@@ -326,198 +376,156 @@ def print_checklist(df: pd.DataFrame, date_str: str) -> str:
     return text
 
 
-# ---------------------- HTML Email Rendering ----------------------
-def _is_nan(x) -> bool:
-    try:
-        return bool(pd.isna(x))
-    except Exception:
-        return False
+# ---------------------- Pretty HTML Email ----------------------
+def build_pretty_html_email(df: pd.DataFrame, checklist_text: str, date_str: str, args: argparse.Namespace) -> str:
+    safe_date = html.escape(date_str)
+    safe_checklist = html.escape(checklist_text or "")
 
+    total = 0 if df is None else len(df)
+    calls = 0 if df is None or df.empty else int((df["Action"] == "BUY_CALL").sum()) if "Action" in df.columns else 0
+    puts  = 0 if df is None or df.empty else int((df["Action"] == "BUY_PUT").sum())  if "Action" in df.columns else 0
 
-def _fmt_cell(col: str, val) -> str:
-    if val is None or val == "" or _is_nan(val):
-        return ""
-    # price-like numbers
-    if col in {"SpotClose","StopUnderlying","TargetUnderlying","OptionStrike","OptionLast","OptionStop","OptionTarget"}:
+    def badge(action: str) -> str:
+        a = (action or "").upper()
+        if a == "BUY_CALL":
+            return "<span style='display:inline-block;padding:2px 8px;border-radius:999px;font-weight:800;font-size:11px;background:#ecfdf5;color:#065f46;border:1px solid #d1fae5;'>BUY_CALL</span>"
+        if a == "BUY_PUT":
+            return "<span style='display:inline-block;padding:2px 8px;border-radius:999px;font-weight:800;font-size:11px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;'>BUY_PUT</span>"
+        return f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;font-weight:800;font-size:11px;background:#f3f4f6;color:#374151;border:1px solid #e5e7eb;'>{html.escape(action or '')}</span>"
+
+    def fmt(col, v):
+        if v is None or v == "" or (isinstance(v, float) and pd.isna(v)):
+            return ""
         try:
-            return f"{float(val):.2f}"
+            if col in {"SpotClose","StopUnderlying","TargetUnderlying","OptionStrike","OptionLast","OptionStop","OptionTarget"}:
+                return f"{float(v):.2f}"
+            if col in {"ATR","Delta","IV"}:
+                return f"{float(v):.3f}"
         except Exception:
-            return str(val)
-    # atr/delta/iv
-    if col in {"ATR","Delta","IV"}:
-        try:
-            return f"{float(val):.3f}"
-        except Exception:
-            return str(val)
-    return str(val)
-
-
-def _th_style() -> str:
-    return "text-align:left;padding:8px;border:1px solid #e7e9f0;background:#f7fafc;font-size:12px;white-space:nowrap;"
-
-
-def _td_style(align: str = "left") -> str:
-    base = "padding:8px;border:1px solid #e7e9f0;vertical-align:top;font-size:12px;"
-    if align == "right":
-        return base + "text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;"
-    if align == "center":
-        return base + "text-align:center;white-space:nowrap;"
-    return base + "text-align:left;"
-
-
-def _badge(text: str, bg: str, fg: str) -> str:
-    return f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;font-weight:800;font-size:11px;background:{bg};color:{fg};border:1px solid rgba(0,0,0,.06);white-space:nowrap;'>{html.escape(text)}</span>"
-
-
-def _action_badge(action: str) -> str:
-    a = (action or "").upper()
-    if a == "BUY_CALL":
-        return _badge("BUY_CALL", "#ecfdf5", "#065f46")
-    if a == "BUY_PUT":
-        return _badge("BUY_PUT", "#fff7ed", "#9a3412")
-    return _badge(action or "", "#f3f4f6", "#374151")
-
-
-def render_entries_table_html(df: pd.DataFrame) -> str:
-    if df is None or df.empty:
-        return """
-          <div style="padding:12px 14px;border:1px solid #e6edf5;border-radius:12px;background:#f7fafc;font-size:13px;">
-            ✅ No new entries for tomorrow.
-          </div>
-        """
+            pass
+        return str(v)
 
     cols = [
         "Ticker","Action","SpotClose","ATR","StopUnderlying","TargetUnderlying",
-        "Expiry","OptionType","OptionStrike","OptionLast","OptionStop","OptionTarget",
-        "OptionSymbol","Delta","IV"
+        "Expiry","OptionType","OptionStrike","OptionLast","OptionStop","OptionTarget","OptionSymbol","Delta","IV"
     ]
-    cols = [c for c in cols if c in df.columns]
-    view = df[cols].copy()
 
-    # Build manual HTML table (more control than pandas.to_html for email)
-    head = "".join([f"<th style='{_th_style()}'>{html.escape(c)}</th>" for c in cols])
+    # Build table
+    if df is None or df.empty:
+        table_html = """
+          <div style="padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px;background:#f9fafb;font-size:13px;">
+            ✅ No new entries for tomorrow.
+          </div>
+        """
+    else:
+        cols = [c for c in cols if c in df.columns]
+        head = "".join([
+            f"<th style='text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;'>{html.escape(c)}</th>"
+            for c in cols
+        ])
 
-    body_rows = []
-    numeric_right = {"SpotClose","ATR","StopUnderlying","TargetUnderlying","OptionStrike","OptionLast","OptionStop","OptionTarget","Delta","IV"}
+        numeric_right = {"SpotClose","ATR","StopUnderlying","TargetUnderlying","OptionStrike","OptionLast","OptionStop","OptionTarget","Delta","IV"}
 
-    for _, r in view.iterrows():
-        tds = []
-        for c in cols:
-            if c == "Action":
-                cell = _action_badge(str(r.get(c, "")))
-                tds.append(f"<td style='{_td_style('center')}'>{cell}</td>")
-            else:
-                raw = r.get(c, "")
-                cell_txt = html.escape(_fmt_cell(c, raw))
-                align = "right" if c in numeric_right else "left"
-                tds.append(f"<td style='{_td_style(align)}'>{cell_txt}</td>")
-        body_rows.append("<tr>" + "".join(tds) + "</tr>")
+        rows_html = []
+        for _, r in df[cols].iterrows():
+            tds = []
+            for c in cols:
+                if c == "Action":
+                    tds.append(f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;white-space:nowrap;text-align:center;'>{badge(str(r.get(c,'')))}</td>")
+                else:
+                    align = "right" if c in numeric_right else "left"
+                    tds.append(f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;white-space:nowrap;text-align:{align};font-variant-numeric:tabular-nums;'>{html.escape(fmt(c, r.get(c,'')))}</td>")
+            rows_html.append("<tr>" + "".join(tds) + "</tr>")
 
-    table = f"""
-      <div style="border:1px solid #e7e9f0;border-radius:12px;overflow:hidden;">
-        <div style="overflow:auto;">
-          <table style="width:100%;border-collapse:collapse;">
-            <thead><tr>{head}</tr></thead>
-            <tbody>
-              {''.join(body_rows)}
-            </tbody>
-          </table>
-        </div>
-      </div>
+        table_html = f"""
+          <div style="border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+            <div style="overflow:auto;">
+              <table style="width:100%;border-collapse:collapse;">
+                <thead><tr>{head}</tr></thead>
+                <tbody>
+                  {''.join(rows_html)}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        """
+
+    # Summary cards
+    cards = f"""
+      <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:12px 0;margin:0 0 12px 0;">
+        <tr>
+          <td style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px;">
+            <div style="font-size:12px;color:#6b7280;font-weight:700;">Total entries</div>
+            <div style="font-size:18px;font-weight:900;color:#111827;margin-top:2px;">{total}</div>
+          </td>
+          <td style="background:#ecfdf5;border:1px solid #d1fae5;border-radius:12px;padding:12px;">
+            <div style="font-size:12px;color:#065f46;font-weight:700;">BUY_CALL</div>
+            <div style="font-size:18px;font-weight:900;color:#065f46;margin-top:2px;">{calls}</div>
+          </td>
+          <td style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:12px;">
+            <div style="font-size:12px;color:#9a3412;font-weight:700;">BUY_PUT</div>
+            <div style="font-size:18px;font-weight:900;color:#9a3412;margin-top:2px;">{puts}</div>
+          </td>
+        </tr>
+      </table>
     """
-    return table
 
-
-def render_html_email(df: pd.DataFrame,
-                      checklist_text: str,
-                      script_text: str,
-                      date_str: str,
-                      args: argparse.Namespace) -> str:
-    safe_checklist = html.escape(checklist_text or "")
-    safe_script = html.escape(script_text or "")
-    safe_date = html.escape(date_str)
-
-    table_html = render_entries_table_html(df)
-
+    # Run command
     usage = (
         f"python unified_turtle_entries_only.py --system {args.system} --allow-shorts {int(bool(args.allow_shorts))} "
-        f"--top {args.top} --save {html.escape(args.save)} --emit-checklist {int(args.emit_checklist)} --emit-html {int(args.emit_html)}"
+        f"--top {args.top} --save {html.escape(args.save)} --emit-checklist {int(args.emit_checklist)} "
+        f"--emit-html {int(args.emit_html)} --send-email {int(args.send_email)}"
     )
 
     html_out = f"""<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Turtle Scanner — {safe_date}</title>
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;background:#f6f7fb;">
-  <div style="width:100%;background:#f6f7fb;padding:24px 12px;">
-    <div style="max-width:980px;margin:0 auto;background:#ffffff;border:1px solid #e7e9f0;border-radius:14px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#1f2430;">
+  <div style="width:100%;padding:24px 12px;background:#f6f7fb;">
+    <div style="max-width:980px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
 
       <!-- Header -->
       <div style="background:#0b1220;color:#ffffff;padding:18px 22px;">
-        <div style="font-size:18px;line-height:1.25;font-weight:800;margin:0;">🐢 Nightly Turtle Entries (Fresh Only)</div>
-        <div style="font-size:12px;opacity:.9;margin-top:6px;">HTML email view — {safe_date}</div>
+        <div style="font-size:18px;font-weight:900;line-height:1.25;">🐢 Turtle Scanner — New Entries</div>
+        <div style="font-size:12px;opacity:.9;margin-top:6px;">For next open · {safe_date}</div>
       </div>
 
       <!-- Content -->
-      <div style="padding:18px 22px 8px;">
+      <div style="padding:18px 22px;">
+        {cards}
 
-        <!-- Badges -->
-        <div style="margin-bottom:10px;">
-          <span style="display:inline-block;font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;margin:0 8px 8px 0;background:#eef2ff;color:#2b3a88;">✅ Fresh entries</span>
-          <span style="display:inline-block;font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;margin:0 8px 8px 0;background:#eef2ff;color:#2b3a88;">📄 Checklist</span>
-          <span style="display:inline-block;font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;margin:0 8px 8px 0;background:#eef2ff;color:#2b3a88;">💾 CSV export</span>
-          <span style="display:inline-block;font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;margin:0 8px 8px 0;background:#eef2ff;color:#2b3a88;">✉️ Email-ready HTML</span>
-        </div>
-
-        <!-- Usage -->
-        <div style="margin:14px 0 18px;">
-          <div style="font-size:14px;font-weight:800;margin:0 0 10px;">▶️ Run Command</div>
-          <div style="background:#f7fafc;border:1px solid #e6edf5;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.45;">
+        <!-- Run command -->
+        <div style="margin:12px 0 16px 0;">
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">▶️ Run Command</div>
+          <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px;font-size:12px;line-height:1.45;">
             <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;background:#eef0f6;padding:2px 6px;border-radius:6px;">{usage}</span>
           </div>
         </div>
 
-        <!-- Entries -->
-        <div style="margin:14px 0 18px;">
-          <div style="font-size:14px;font-weight:800;margin:0 0 10px;">📈 New Entries (Tomorrow)</div>
+        <!-- Entries table -->
+        <div style="margin:0 0 16px 0;">
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">📈 Entries</div>
           {table_html}
-          <div style="margin-top:8px;font-size:12px;color:#6b7280;">
-            Tip: table scrolls horizontally on mobile.
-          </div>
+          <div style="margin-top:8px;font-size:12px;color:#6b7280;">Tip: table scrolls horizontally on mobile.</div>
         </div>
 
         <!-- Checklist -->
-        <div style="margin:14px 0 18px;">
-          <div style="font-size:14px;font-weight:800;margin:0 0 10px;">🧾 Checklist Output</div>
-          <div style="background:#0b1220;color:#e6edf3;border:1px solid #1d2a44;border-radius:12px;overflow:hidden;">
-            <div style="padding:10px 12px;background:#101a2f;color:#cbd5e1;font-size:12px;border-bottom:1px solid #1d2a44;">
+        <div style="margin:0 0 6px 0;">
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">🧾 Checklist Output</div>
+          <div style="background:#0b1220;color:#e5e7eb;border:1px solid #1f2a44;border-radius:12px;overflow:hidden;">
+            <div style="padding:10px 12px;background:#101a2f;color:#cbd5e1;font-size:12px;border-bottom:1px solid #1f2a44;">
               stdout (copy/paste)
             </div>
-            <pre style="margin:0;padding:14px;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;">{safe_checklist}</pre>
-          </div>
-        </div>
-
-        <!-- Script -->
-        <div style="margin:14px 0 18px;">
-          <div style="font-size:14px;font-weight:800;margin:0 0 10px;">💻 Script (Reference)</div>
-          <div style="background:#0b1220;color:#e6edf3;border:1px solid #1d2a44;border-radius:12px;overflow:hidden;">
-            <div style="padding:10px 12px;background:#101a2f;color:#cbd5e1;font-size:12px;border-bottom:1px solid #1d2a44;">
-              unified_turtle_entries_only.py
-            </div>
-            <pre style="margin:0;padding:14px;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;">{safe_script}</pre>
+            <pre style="margin:0;padding:12px;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;">{safe_checklist}</pre>
           </div>
         </div>
 
       </div>
 
       <!-- Footer -->
-      <div style="padding:14px 22px 18px;font-size:12px;color:#6b7280;background:#fbfbfd;border-top:1px solid #eef0f6;">
-        Generated by unified_turtle_entries_only.py — {safe_date}
+      <div style="padding:14px 22px;background:#fbfbfd;border-top:1px solid #eef0f6;font-size:12px;color:#6b7280;">
+        Generated by unified_turtle_entries_only.py · {safe_date}
       </div>
-
     </div>
   </div>
 </body>
@@ -528,7 +536,7 @@ def render_html_email(df: pd.DataFrame,
 
 # ---------------------- CLI ----------------------
 def parse_args(argv=None):
-    ap = argparse.ArgumentParser(description="Nightly Turtle new-entry scanner (no ledger) + checklist + HTML email output")
+    ap = argparse.ArgumentParser(description="Nightly Turtle new-entry scanner (no ledger) + checklist + pretty HTML email")
     ap.add_argument("--system", type=int, default=SYSTEM_DEFAULT, choices=[1,2])
     ap.add_argument("--allow-shorts", type=int, default=int(ALLOW_SHORTS_DEFAULT))
     ap.add_argument("--atr", type=int, default=ATR_PERIOD_DEFAULT)
@@ -544,6 +552,7 @@ def parse_args(argv=None):
     ap.add_argument("--emit-checklist", type=int, default=1, help="1=also write a .txt checklist next to CSV, 0=print only")
     ap.add_argument("--emit-html", type=int, default=1, help="1=also write a .html email view next to CSV, 0=skip")
     ap.add_argument("--html-out", type=str, default="", help="Optional custom path for HTML output")
+    ap.add_argument("--send-email", type=int, default=1, help="1=send email via SMTP env vars, 0=skip sending")
     return ap.parse_args(argv)
 
 
@@ -568,7 +577,7 @@ def main(argv=None):
     df.to_csv(args.save, index=False)
     print(f"Saved {len(df)} new entries to {args.save}")
 
-    # Print checklist
+    # Checklist
     date_str = datetime.now().strftime("%Y-%m-%d")
     checklist = print_checklist(df, date_str)
 
@@ -580,17 +589,11 @@ def main(argv=None):
             f.write(checklist)
         print(f"Checklist saved to: {txt_path}")
 
-    # Optionally save HTML email view
+    # Build pretty HTML
+    html_email = build_pretty_html_email(df, checklist, date_str, args)
+
+    # Optionally save HTML to disk
     if int(args.emit_html) == 1:
-        try:
-            script_path = os.path.abspath(__file__)
-            with open(script_path, "r", encoding="utf-8") as f:
-                script_text = f.read()
-        except Exception:
-            script_text = "# (Could not read script file from disk.)"
-
-        html_email = render_html_email(df, checklist, script_text, date_str, args)
-
         if args.html_out.strip():
             html_path = args.html_out.strip()
         else:
@@ -600,6 +603,21 @@ def main(argv=None):
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html_email)
         print(f"HTML email view saved to: {html_path}")
+
+    # Optionally send email
+    if int(args.send_email) == 1:
+        if EMAIL_MODE == "entries_only" and (df is None or df.empty):
+            print("EMAIL_MODE=entries_only and no entries — skipping email.")
+            return 0
+
+        if not smtp_ready():
+            print("SMTP not ready — set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO")
+            return 0
+
+        subject = f"🐢 Turtle Entries — {date_str}"
+        text_body = checklist or f"Turtle Entries — {date_str}\n(No checklist text)"
+        send_pretty_email(subject, html_email, text_body)
+        print(f"Email sent to: {EMAIL_TO}")
 
     return 0
 
