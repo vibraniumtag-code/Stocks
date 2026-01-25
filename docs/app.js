@@ -1,366 +1,346 @@
-/* docs/app.js  (UPDATED)
-   Fix: BUY rows were sometimes treated as ACK-only.
-   Now the UI decides ACK vs UPDATE strictly by Type:
-     - SELL / ADD / BUY  => Execute · Update CSV
-     - HOLD              => Execute Ack
+/* Portfolio Manager Dashboard (docs/app.js)
+   - Loads docs/portfolio_plan.csv
+   - ACK or EXECUTE moves
+   - EXECUTE dispatches apply_move.yml (workflow_dispatch) with correct inputs
+   - BUY execution prompts for option_entry_price + underlying_entry_price
 */
 
-const OWNER = "vibraniumtag-code";
-const REPO  = "Stocks";
+const WORKFLOW_FILE = "apply_move.yml";   // must match .github/workflows/apply_move.yml
 const BRANCH = "main";
-const WORKFLOW_FILE = "apply_move.yml";
-const PLAN_PATH = "./portfolio_plan.csv";
+const PLAN_CSV = "portfolio_plan.csv";    // served from /docs
 
-// ---------- helpers ----------
-const $ = (s) => document.querySelector(s);
+const els = {
+  owner: document.getElementById("owner"),
+  repo: document.getElementById("repo"),
+  token: document.getElementById("token"),
+  saveBtn: document.getElementById("saveBtn"),
+  loadBtn: document.getElementById("loadBtn"),
+  planBody: document.getElementById("planBody"),
+  status: document.getElementById("status"),
+  log: document.getElementById("log"),
+};
 
-function normKey(k) { return String(k || "").trim().toLowerCase(); }
-function clean(v) { return (v ?? "").toString().trim(); }
-function toNum(v) {
-  const n = Number(String(v ?? "").trim());
-  return Number.isFinite(n) ? n : null;
-}
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;").replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function log(msg) {
+  els.log.textContent = `${new Date().toISOString()}  ${msg}\n` + els.log.textContent;
 }
 
+function setStatus(msg) {
+  els.status.textContent = msg;
+}
+
+function saveSettings() {
+  localStorage.setItem("pm_owner", els.owner.value.trim());
+  localStorage.setItem("pm_repo", els.repo.value.trim());
+  // store token locally on device (Safari)
+  localStorage.setItem("pm_token", els.token.value);
+  setStatus("Saved ✅");
+  log("Saved owner/repo/token in this browser (localStorage).");
+}
+
+function loadSettings() {
+  els.owner.value = localStorage.getItem("pm_owner") || "";
+  els.repo.value = localStorage.getItem("pm_repo") || "";
+  els.token.value = localStorage.getItem("pm_token") || "";
+}
+
+function pill(type) {
+  const t = (type || "").toUpperCase();
+  if (t === "SELL") return `<span class="pill pill-sell">SELL</span>`;
+  if (t === "BUY") return `<span class="pill pill-buy">BUY</span>`;
+  if (t === "ADD") return `<span class="pill pill-add">ADD</span>`;
+  if (t === "HOLD") return `<span class="pill pill-hold">HOLD</span>`;
+  return `<span class="pill">${escapeHtml(type || "")}</span>`;
+}
+
+/** Robust CSV parser (handles quotes + commas) */
 function parseCSV(text) {
-  // supports quoted fields
   const rows = [];
-  let i = 0, field = "", row = [], inQuotes = false;
-
-  const pushField = () => { row.push(field); field = ""; };
-  const pushRow = () => {
-    if (row.length === 1 && row[0] === "") { row = []; return; }
-    rows.push(row); row = [];
-  };
-
-  while (i < text.length) {
+  let row = [], field = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
     const c = text[i];
+    const n = text[i + 1];
 
     if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
-        inQuotes = false; i++; continue;
-      }
-      field += c; i++; continue;
+      if (c === '"' && n === '"') { field += '"'; i++; }
+      else if (c === '"') { inQuotes = false; }
+      else { field += c; }
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ",") { row.push(field); field = ""; }
+      else if (c === "\n") {
+        row.push(field); field = "";
+        // skip empty trailing lines
+        if (row.some(x => x.trim() !== "")) rows.push(row);
+        row = [];
+      } else if (c === "\r") {
+        // ignore
+      } else field += c;
     }
-
-    if (c === '"') { inQuotes = true; i++; continue; }
-    if (c === ",") { pushField(); i++; continue; }
-    if (c === "\r") { i++; continue; }
-    if (c === "\n") { pushField(); pushRow(); i++; continue; }
-
-    field += c; i++;
   }
-  pushField(); pushRow();
+  if (field.length > 0 || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
 
+function toObjects(csvText) {
+  const rows = parseCSV(csvText);
   if (!rows.length) return [];
-  const header = rows[0].map((h) => normKey(h));
+  const header = rows[0].map(h => (h || "").trim());
   const out = [];
-
-  for (let r = 1; r < rows.length; r++) {
-    const vals = rows[r];
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
     const obj = {};
-    for (let c = 0; c < header.length; c++) obj[header[c]] = clean(vals[c] ?? "");
-    out.push(obj);
-  }
+    for (let j = 0; j < header.length; j++) {
+      obj[header[j]] = (r[j] ?? "").trim();
+    }
+    // ignore completely empty rows
+    if (Object.values(obj).some(v => (v || "").trim() !== "")) out.push(obj);
+    }
   return out;
 }
 
-function normalizePlanRows(raw) {
-  return raw
-    .map((r, idx) => {
-      const type = (r.type || "").toUpperCase();
-      const ticker = (r.ticker || "").toUpperCase();
-
-      const option = r.option || "";            // blank for BUY in your CSV
-      const strategy = r.strategy || "";
-      const expiry = r.expiry || "";
-      const optionSymbol = r.optionsymbol || "";
-      const reco = (r.recommendation || "").toUpperCase();
-
-      const contractsHeld = toNum(r.contractsheld);
-      const sellContracts = toNum(r.sellcontracts);
-      const addContracts  = toNum(r.addcontracts);
-      const buyContracts  = toNum(r.buycontracts);
-
-      const moveId = `${idx}-${type}-${ticker}-${option || optionSymbol || ""}`;
-
-      return {
-        _idx: idx,
-        moveId,
-        type,
-        ticker,
-        recommendation: reco,
-
-        option,
-        strategy,
-        expiry,
-        optionSymbol,
-
-        contractsHeld,
-        sellContracts,
-        addContracts,
-        buyContracts,
-
-        optionLast: r.optionlast || "",
-        estCostTotal: r.estcosttotal || "",
-        positionValue: r.positionvalue || "",
-        optionMark: r.optionmark || "",
-        reason: r.reason || "",
-        pyramidReason: r.pyramidreason || "",
-      };
-    })
-    .filter((r) => r.ticker && r.type); // DO NOT require option (BUY rows have blank option)
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
-function getToken() { return localStorage.getItem("gh_pat") || ""; }
-function setToken(tok) { localStorage.setItem("gh_pat", tok); }
-function clearToken() { localStorage.removeItem("gh_pat"); }
-
-function badge(text, kind = "neutral") {
-  const styles = {
-    ok: "background:#ecfdf5;border:1px solid #d1fae5;color:#065f46;",
-    warn: "background:#fffbeb;border:1px solid #fde68a;color:#92400e;",
-    sell: "background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;",
-    danger: "background:#fef2f2;border:1px solid #fecaca;color:#991b1b;",
-    neutral: "background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;",
-  }[kind] || "background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;";
-
-  return `<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-weight:800;font-size:11px;${styles}">${escapeHtml(text)}</span>`;
+function numCell(v) {
+  const x = (v ?? "").toString().trim();
+  return `<td class="num">${escapeHtml(x)}</td>`;
 }
 
-function buildDispatchInputs(r) {
-  // Adjust these keys to match your apply_move.yml inputs
-  return {
-    move_id: r.moveId,
-    move_type: r.type,
-    ticker: r.ticker,
+function textCell(v, mono=false) {
+  const cls = mono ? "mono" : "";
+  return `<td class="${cls}">${escapeHtml((v ?? "").toString())}</td>`;
+}
 
-    option_name: r.option || "",
-    sell_contracts: r.sellContracts !== null ? String(r.sellContracts) : "0",
-    add_contracts:  r.addContracts  !== null ? String(r.addContracts)  : "0",
+function getMoveTypeFromRow(row) {
+  // plan_df created by your script uses Type column: SELL/HOLD/ADD/BUY
+  return (row["Type"] || "").trim().toUpperCase();
+}
 
-    strategy: r.strategy || "",
-    expiry: r.expiry || "",
-    option_symbol: r.optionSymbol || "",
-    buy_contracts: r.buyContracts !== null ? String(r.buyContracts) : "0",
+function buildMoveId(row, idx) {
+  // stable-ish id for logging
+  const t = (row["Ticker"] || "").trim().toUpperCase();
+  const ty = (row["Type"] || "").trim().toUpperCase();
+  const opt = (row["Option"] || "").trim();
+  return `${Date.now()}_${idx}_${ty}_${t}_${opt}`.replaceAll(" ", "_").slice(0, 120);
+}
+
+async function loadPlan() {
+  setStatus("Loading plan…");
+  els.planBody.innerHTML = `<tr><td colspan="12" style="padding:14px;">Loading…</td></tr>`;
+
+  try {
+    // Cache busting for iOS Safari
+    const url = `${PLAN_CSV}?ts=${Date.now()}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Failed to load plan: ${res.status}`);
+    const text = await res.text();
+    const rows = toObjects(text);
+
+    setStatus(`Loaded rows: ${rows.length}`);
+    log(`Loaded plan rows=${rows.length} from docs/${PLAN_CSV}`);
+
+    renderTable(rows);
+  } catch (e) {
+    setStatus("Load failed ❌");
+    els.planBody.innerHTML = `<tr><td colspan="12" style="padding:14px;color:#991b1b;">${escapeHtml(e.message)}</td></tr>`;
+    log(`ERROR: ${e.message}`);
+  }
+}
+
+function renderTable(rows) {
+  if (!rows.length) {
+    els.planBody.innerHTML = `<tr><td colspan="12" style="padding:14px;">Plan is empty.</td></tr>`;
+    return;
+  }
+
+  const html = rows.map((r, idx) => {
+    const type = getMoveTypeFromRow(r);
+    const ticker = (r["Ticker"] || "").trim().toUpperCase();
+    const optionName = (r["Option"] || "").trim();
+    const sellC = (r["SellContracts"] || "").trim();
+    const addC = (r["AddContracts"] || "").trim();
+    const buyC = (r["BuyContracts"] || "").trim();
+    const strategy = (r["Strategy"] || "").trim();
+    const expiry = (r["Expiry"] || "").trim();
+    const optionSymbol = (r["OptionSymbol"] || "").trim();
+    const reason = (r["Reason"] || "").trim();
+
+    const moveId = buildMoveId(r, idx);
+
+    // Always allow ACK (no workflow)
+    const ackBtn = `<button class="ok" data-action="ack" data-moveid="${escapeHtml(moveId)}">ACK</button>`;
+
+    // EXECUTE should run for SELL/ADD/BUY; HOLD is usually ACK only
+    const executeBtnDisabled = (type === "HOLD" || type === "");
+    const execBtn = executeBtnDisabled
+      ? `<button disabled>EXECUTE</button>`
+      : `<button class="warn" data-action="execute" data-moveid="${escapeHtml(moveId)}">EXECUTE · Update CSV</button>`;
+
+    return `
+      <tr data-idx="${idx}"
+          data-type="${escapeHtml(type)}"
+          data-ticker="${escapeHtml(ticker)}"
+          data-option="${escapeHtml(optionName)}"
+          data-sell="${escapeHtml(sellC)}"
+          data-add="${escapeHtml(addC)}"
+          data-buy="${escapeHtml(buyC)}"
+          data-strategy="${escapeHtml(strategy)}"
+          data-expiry="${escapeHtml(expiry)}"
+          data-symbol="${escapeHtml(optionSymbol)}">
+        <td>${pill(type)}</td>
+        ${textCell(ticker, true)}
+        ${textCell(optionName, true)}
+        ${numCell(r["ContractsHeld"] || "")}
+        ${numCell(sellC)}
+        ${numCell(addC)}
+        ${numCell(buyC)}
+        ${textCell(strategy)}
+        ${textCell(expiry, true)}
+        ${textCell(optionSymbol, true)}
+        ${textCell(reason)}
+        <td>${ackBtn} ${execBtn}</td>
+      </tr>
+    `;
+  }).join("");
+
+  els.planBody.innerHTML = html;
+
+  // attach handlers
+  els.planBody.querySelectorAll("button[data-action]").forEach(btn => {
+    btn.addEventListener("click", onActionClick);
+  });
+}
+
+async function onActionClick(e) {
+  const btn = e.currentTarget;
+  const action = btn.getAttribute("data-action");
+  const tr = btn.closest("tr");
+  if (!tr) return;
+
+  const moveId = btn.getAttribute("data-moveid") || `move_${Date.now()}`;
+  const type = (tr.getAttribute("data-type") || "").toUpperCase();
+  const ticker = tr.getAttribute("data-ticker") || "";
+  const optionName = tr.getAttribute("data-option") || "";
+  const sellContracts = tr.getAttribute("data-sell") || "0";
+  const addContracts = tr.getAttribute("data-add") || "0";
+  const buyContracts = tr.getAttribute("data-buy") || "0";
+  const strategy = tr.getAttribute("data-strategy") || "";
+  const expiry = tr.getAttribute("data-expiry") || "";
+  const optionSymbol = tr.getAttribute("data-symbol") || "";
+
+  if (action === "ack") {
+    log(`✅ ACK: ${type} ${ticker} ${optionName}`);
+    alert(`ACK saved locally.\n\n${type} ${ticker}\n${optionName}`);
+    return;
+  }
+
+  // EXECUTE
+  const owner = els.owner.value.trim();
+  const repo = els.repo.value.trim();
+  const token = els.token.value;
+
+  if (!owner || !repo) {
+    alert("Please set owner + repo.");
+    return;
+  }
+  if (!token) {
+    alert("No token saved. Paste your PAT and click Save Token first.");
+    return;
+  }
+
+  // For BUY, we must collect entry prices so positions.csv stays correct format
+  let optionEntryPrice = "";
+  let underlyingEntryPrice = "";
+
+  if (type === "BUY") {
+    optionEntryPrice = prompt("Enter OPTION entry price (e.g., 2.30):", "");
+    if (!optionEntryPrice || isNaN(Number(optionEntryPrice)) || Number(optionEntryPrice) <= 0) {
+      alert("BUY requires a valid option entry price.");
+      return;
+    }
+    underlyingEntryPrice = prompt("Enter UNDERLYING entry price (stock price at execution):", "");
+    if (!underlyingEntryPrice || isNaN(Number(underlyingEntryPrice)) || Number(underlyingEntryPrice) <= 0) {
+      alert("BUY requires a valid underlying entry price.");
+      return;
+    }
+  }
+
+  // Confirm
+  const ok = confirm(
+    `EXECUTE will update positions.csv via GitHub Actions.\n\n` +
+    `${type} ${ticker}\n${optionName || ""}\n\nProceed?`
+  );
+  if (!ok) return;
+
+  btn.disabled = true;
+  try {
+    await dispatchWorkflow({
+      owner, repo, token,
+      inputs: {
+        move_id: moveId,
+        move_type: type,
+        ticker: ticker,
+        option_name: optionName,
+        sell_contracts: sellContracts || "0",
+        add_contracts: addContracts || "0",
+        strategy: strategy || "",
+        expiry: expiry || "",
+        option_symbol: optionSymbol || "",
+        buy_contracts: buyContracts || "0",
+
+        // NEW: only meaningful for BUY; workflow can ignore for SELL/ADD/HOLD
+        option_entry_price: optionEntryPrice || "",
+        underlying_entry_price: underlyingEntryPrice || "",
+      }
+    });
+
+    log(`🚀 Dispatch OK: ${type} ${ticker} (move_id=${moveId})`);
+    alert("✅ Dispatched. Check Actions tab for run status.");
+  } catch (err) {
+    log(`❌ Dispatch failed: ${err.message}`);
+    alert(`❌ Dispatch failed:\n${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function dispatchWorkflow({ owner, repo, token, inputs }) {
+  // GitHub API: create workflow dispatch
+  const url = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`;
+
+  const body = {
+    ref: BRANCH,
+    inputs: inputs
   };
-}
-
-async function dispatchMove(r) {
-  const token = getToken();
-  if (!token) throw new Error("No token saved. Paste your PAT and click Save Token first.");
-
-  const url = `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${encodeURIComponent(WORKFLOW_FILE)}/dispatches`;
-  const payload = { ref: BRANCH, inputs: buildDispatchInputs(r) };
 
   const res = await fetch(url, {
     method: "POST",
     headers: {
       "Accept": "application/vnd.github+json",
-      "Authorization": `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2022-11-28",
+      "Authorization": `token ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`Dispatch failed (${res.status}): ${txt || res.statusText}`);
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const j = await res.json();
+      msg = `${res.status}: ${JSON.stringify(j)}`;
+    } catch {}
+    throw new Error(msg);
   }
 }
 
-// ---------- UPDATED: button mode is now ONLY based on Type ----------
-function isUpdateCSV(r) {
-  // ✅ authoritative rule:
-  // SELL / ADD / BUY => update CSV
-  // HOLD => ack only
-  return r.type === "SELL" || r.type === "ADD" || r.type === "BUY";
-}
-
-function fmtNum(n) {
-  if (n === null || n === undefined) return "";
-  if (!Number.isFinite(n)) return "";
-  return String(n);
-}
-
-// ---------- UI ----------
-function ensureUI() {
-  if (!$("#app")) {
-    document.body.innerHTML = `<div style="max-width:1100px;margin:0 auto;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;"><div id="app"></div></div>`;
-  }
-}
-
-function render(rows) {
-  const total = rows.length;
-  const actions = rows.filter(r => r.recommendation && r.recommendation !== "HOLD").length;
-
-  const tokenSet = !!getToken();
-
-  const sorted = [...rows].sort((a,b) => {
-    const aAct = (a.recommendation && a.recommendation !== "HOLD") ? 0 : 1;
-    const bAct = (b.recommendation && b.recommendation !== "HOLD") ? 0 : 1;
-    if (aAct !== bAct) return aAct - bAct;
-    if (a.type !== b.type) return a.type.localeCompare(b.type);
-    return a.ticker.localeCompare(b.ticker);
-  });
-
-  $("#app").innerHTML = `
-    <div style="background:#0b1220;color:#fff;padding:14px 16px;border-radius:14px;">
-      <div style="font-size:18px;font-weight:900;">📊 Portfolio Plan Dashboard</div>
-      <div style="opacity:.9;font-size:12px;margin-top:4px;">
-        Loaded rows: <b>${total}</b> · Action rows: <b>${actions}</b>
-      </div>
-    </div>
-
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0;">
-      <div style="flex:1;min-width:260px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px;">
-        <div style="font-size:12px;color:#6b7280;font-weight:800;">GitHub Token (fine-grained PAT)</div>
-        <div style="display:flex;gap:8px;margin-top:8px;">
-          <input id="token" type="password" placeholder="${tokenSet ? "Token saved" : "Paste token"}"
-            style="flex:1;padding:10px;border:1px solid #e5e7eb;border-radius:10px;"/>
-          <button id="saveTok" style="padding:10px 12px;border-radius:10px;border:1px solid #111827;background:#111827;color:#fff;font-weight:800;cursor:pointer;">Save</button>
-          <button id="clearTok" style="padding:10px 12px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-weight:800;cursor:pointer;">Clear</button>
-        </div>
-      </div>
-
-      <div style="flex:1;min-width:260px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px;">
-        <div style="font-size:12px;color:#6b7280;font-weight:800;">Data Source</div>
-        <div style="margin-top:8px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:10px;">
-          ${escapeHtml(new URL(PLAN_PATH, window.location.href).toString())}
-        </div>
-      </div>
-    </div>
-
-    <div style="border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;background:#fff;">
-      <div style="overflow:auto;">
-        <table style="width:100%;border-collapse:collapse;">
-          <thead>
-            <tr>
-              <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;">Ticker</th>
-              <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;">Type</th>
-              <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;">Recommendation</th>
-              <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;">Option / Symbol</th>
-              <th style="text-align:right;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;">Held</th>
-              <th style="text-align:right;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;">Sell</th>
-              <th style="text-align:right;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;">Add</th>
-              <th style="text-align:right;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;">Buy</th>
-              <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;">Reason</th>
-              <th style="text-align:center;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;">Execute</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${sorted.map(r => {
-              const reco = r.recommendation || "—";
-              const recoKind =
-                reco.startsWith("SELL") ? (reco === "SELL_ALL" ? "danger" : "sell") :
-                reco.startsWith("ADD") ? "ok" :
-                reco === "HOLD" ? "ok" : "neutral";
-
-              const typeKind =
-                r.type === "SELL" ? "sell" :
-                r.type === "BUY"  ? "warn" :
-                r.type === "ADD"  ? "ok" : "neutral";
-
-              const optOrSym = r.option || r.optionSymbol || "";
-              const reason = r.type === "BUY" ? (r.reason || "New entry") : (r.pyramidReason || r.reason || "");
-
-              const update = isUpdateCSV(r);
-              const btnLabel = update ? "Execute · Update CSV" : "Execute Ack";
-              const btnKind = update ? "background:#111827;color:#fff;border:1px solid #111827;" : "background:#fff;color:#111827;border:1px solid #e5e7eb;";
-
-              return `
-                <tr>
-                  <td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace;">${escapeHtml(r.ticker)}</td>
-                  <td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;">${badge(r.type, typeKind)}</td>
-                  <td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;">${badge(reco, recoKind)}</td>
-                  <td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;max-width:360px;word-break:break-word;">
-                    ${escapeHtml(optOrSym)}
-                    ${r.expiry ? `<div style="color:#6b7280;font-size:11px;margin-top:3px;">Exp: ${escapeHtml(r.expiry)} ${r.strategy ? `· ${escapeHtml(r.strategy)}` : ""}</div>` : ""}
-                  </td>
-                  <td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;text-align:right;font-variant-numeric:tabular-nums;">${fmtNum(r.contractsHeld)}</td>
-                  <td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;text-align:right;font-variant-numeric:tabular-nums;">${fmtNum(r.sellContracts)}</td>
-                  <td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;text-align:right;font-variant-numeric:tabular-nums;">${fmtNum(r.addContracts)}</td>
-                  <td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;text-align:right;font-variant-numeric:tabular-nums;">${fmtNum(r.buyContracts)}</td>
-                  <td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;max-width:320px;word-break:break-word;">${escapeHtml(reason)}</td>
-                  <td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;text-align:center;">
-                    <button class="execBtn" data-moveid="${escapeHtml(r.moveId)}"
-                      style="padding:8px 10px;border-radius:10px;cursor:pointer;font-weight:800;${btnKind}">
-                      ${btnLabel}
-                    </button>
-                    <div class="status" data-status="${escapeHtml(r.moveId)}" style="margin-top:6px;font-size:11px;color:#6b7280;"></div>
-                  </td>
-                </tr>
-              `;
-            }).join("")}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
-
-  $("#saveTok").onclick = () => {
-    const v = $("#token").value.trim();
-    if (!v) return alert("Paste a token first.");
-    setToken(v);
-    $("#token").value = "";
-    alert("Token saved in browser.");
-  };
-  $("#clearTok").onclick = () => {
-    clearToken();
-    alert("Token cleared.");
-  };
-
-  document.querySelectorAll(".execBtn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const moveId = btn.getAttribute("data-moveid");
-      const row = sorted.find(x => x.moveId === moveId);
-      const st = document.querySelector(`.status[data-status="${CSS.escape(moveId)}"]`);
-      try {
-        btn.disabled = true;
-        btn.style.opacity = "0.6";
-        if (st) st.textContent = "Dispatching…";
-
-        await dispatchMove(row);
-
-        if (st) st.textContent = "✅ Dispatched. Check Actions tab.";
-      } catch (e) {
-        if (st) st.textContent = `❌ ${e.message}`;
-        btn.disabled = false;
-        btn.style.opacity = "1";
-      }
-    });
-  });
-}
-
-async function loadPlan() {
-  ensureUI();
-  try {
-    console.log("Fetching plan from:", new URL(PLAN_PATH, window.location.href).toString());
-    const res = await fetch(PLAN_PATH, { cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status} loading ${PLAN_PATH}`);
-
-    const text = await res.text();
-    const raw = parseCSV(text);
-    const rows = normalizePlanRows(raw);
-
-    console.log("Loaded rows:", rows.length);
-    render(rows);
-  } catch (e) {
-    $("#app").innerHTML = `
-      <div style="background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:14px;border-radius:12px;">
-        <div style="font-weight:900;">Failed to load plan</div>
-        <div style="margin-top:6px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;">${escapeHtml(e.message)}</div>
-      </div>
-    `;
-    console.error(e);
-  }
-}
-
-document.addEventListener("DOMContentLoaded", loadPlan);
+// Wire up
+els.saveBtn.addEventListener("click", saveSettings);
+els.loadBtn.addEventListener("click", loadPlan);
+loadSettings();
+loadPlan();
+log("Dashboard ready.");
