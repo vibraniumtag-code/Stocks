@@ -15,6 +15,10 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    environment: GMAIL   # <-- remove this line if you're NOT using Environment secrets
+
+
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
