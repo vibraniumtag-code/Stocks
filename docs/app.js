@@ -9,7 +9,8 @@
    - Set WORKFLOW_FILE to match your workflow filename in .github/workflows/
    - This stores token in Safari localStorage (device only)
 */
-
+const DEFAULT_OWNER = "vibraniumtag-code"; // put your username/org
+const DEFAULT_REPO  = "Stocks"; // put your repo name
 const WORKFLOW_FILE = "apply_move.yml"; // .github/workflows/apply_move.yml
 const BRANCH = "main";
 const PLAN_CSV = "portfolio_plan.csv"; // served from /docs
