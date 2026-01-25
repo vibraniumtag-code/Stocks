@@ -215,7 +215,12 @@ jobs:
                   raise SystemExit("SELL requires sell_contracts > 0")
               if move_type == "ADD" and add_n <= 0:
                   raise SystemExit("ADD requires add_contracts > 0")
-
+              if move_type == "DELETE":
+                  row = find_row()
+                  if row is None:
+                      raise SystemExit(f"Could not find position to DELETE: {ticker} | {option_name}")
+                  rows.remove(row)
+                  changed = True
               row = find_row()
               if row is None:
                   raise SystemExit(f"Could not find position to {move_type}: {ticker} | {option_name}")
