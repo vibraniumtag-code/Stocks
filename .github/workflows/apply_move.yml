@@ -1,3 +1,87 @@
+name: Apply Move (Update positions.csv)
+
+on:
+  workflow_dispatch:
+    inputs:
+      move_id:
+        description: "Unique move id"
+        required: true
+        type: string
+      move_type:
+        description: "SELL | ADD | BUY"
+        required: true
+        type: string
+      ticker:
+        description: "Ticker"
+        required: true
+        type: string
+      option_name:
+        description: "Exact option_name as in positions.csv (required for SELL/ADD; optional for BUY if option_symbol provided)"
+        required: false
+        type: string
+      sell_contracts:
+        description: "SELL contracts"
+        required: false
+        type: string
+        default: "0"
+      add_contracts:
+        description: "ADD contracts"
+        required: false
+        type: string
+        default: "0"
+      buy_contracts:
+        description: "BUY contracts"
+        required: false
+        type: string
+        default: "0"
+      strategy:
+        description: "BUY_CALL / BUY_PUT (optional)"
+        required: false
+        type: string
+      expiry:
+        description: "YYYY-MM-DD (optional)"
+        required: false
+        type: string
+      option_symbol:
+        description: "OCC option symbol (e.g., XOM260320C00135000) used to build option_name for BUY"
+        required: false
+        type: string
+      option_entry_price:
+        description: "Actual option fill price (BUY)"
+        required: false
+        type: string
+      underlying_entry_price:
+        description: "Underlying price at execution (BUY)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show received inputs (debug)
+        run: |
+          echo "move_id=${{ inputs.move_id }}"
+          echo "move_type=${{ inputs.move_type }}"
+          echo "ticker=${{ inputs.ticker }}"
+          echo "option_name=${{ inputs.option_name }}"
+          echo "sell_contracts=${{ inputs.sell_contracts }}"
+          echo "add_contracts=${{ inputs.add_contracts }}"
+          echo "buy_contracts=${{ inputs.buy_contracts }}"
+          echo "strategy=${{ inputs.strategy }}"
+          echo "expiry=${{ inputs.expiry }}"
+          echo "option_symbol=${{ inputs.option_symbol }}"
+          echo "option_entry_price=${{ inputs.option_entry_price }}"
+          echo "underlying_entry_price=${{ inputs.underlying_entry_price }}"
+
       - name: Apply move to positions.csv
         env:
           MOVE_ID: ${{ inputs.move_id }}
@@ -12,21 +96,20 @@
           OPTION_SYMBOL: ${{ inputs.option_symbol }}
           OPTION_ENTRY_PRICE: ${{ inputs.option_entry_price }}
           UNDERLYING_ENTRY_PRICE: ${{ inputs.underlying_entry_price }}
-          CSV_BLOB: ${{ inputs.csv_blob }}
         run: |
           python - <<'PY'
-          import csv, os, re
+          import csv, os, re, shutil
           from datetime import datetime
 
           POS_FILE = "positions.csv"
-          DOCS_POS_FILE = os.path.join("docs", "positions.csv")
           LEDGER = "executions_ledger.csv"
+
+          DOCS_DIR = "docs"
+          DOCS_POS = os.path.join(DOCS_DIR, "positions.csv")
+          DOCS_LED = os.path.join(DOCS_DIR, "executions_ledger.csv")
 
           def today():
               return datetime.utcnow().strftime("%Y-%m-%d")
-
-          def norm(s): 
-              return (s or "").strip()
 
           def ffloat(s):
               s = (s or "").strip()
@@ -46,52 +129,19 @@
               except:
                   return 0
 
-          def ensure_docs_dir():
-              os.makedirs("docs", exist_ok=True)
-
-          def write_text(path, content):
-              tmp = path + ".tmp"
-              with open(tmp, "w", encoding="utf-8", newline="") as f:
-                  f.write(content)
-              os.replace(tmp, path)
-
-          def load_positions():
-              if not os.path.exists(POS_FILE):
-                  raise SystemExit(f"{POS_FILE} not found")
-              with open(POS_FILE, "r", newline="", encoding="utf-8") as f:
-                  r = csv.DictReader(f)
-                  fieldnames = r.fieldnames or []
-                  rows = list(r)
-              return fieldnames, rows
-
-          def normalize_schema(fieldnames, rows):
-              desired = ["ticker","option_name","option_entry_price","entry_date","underlying_entry_price","contracts"]
-              if [c.strip() for c in fieldnames] != desired:
-                  fieldnames = desired
-                  rows = [{
-                      "ticker": row.get("ticker",""),
-                      "option_name": row.get("option_name",""),
-                      "option_entry_price": row.get("option_entry_price",""),
-                      "entry_date": row.get("entry_date",""),
-                      "underlying_entry_price": row.get("underlying_entry_price",""),
-                      "contracts": row.get("contracts","0"),
-                  } for row in rows]
-              return fieldnames, rows
-
-          def row_contracts(row):
-              try:
-                  return max(int(float(row.get("contracts","0") or 0)), 0)
-              except:
-                  return 0
+          def norm(s):
+              return (s or "").strip()
 
           def decode_occ(occ: str):
+              """
+              OCC like: XOM260320C00135000
+              underlying (1-6), yymmdd (6), C/P (1), strike (8, with 3 decimals)
+              """
               occ = (occ or "").strip().upper()
               if not re.match(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$", occ):
                   return None
-              # underlying is leading letters
-              first_digit = re.search(r"\d", occ).start()
-              und = occ[:first_digit]
-              rest = occ[first_digit:]
+              und = occ[:re.search(r"\d", occ).start()]
+              rest = occ[len(und):]
               yy = int(rest[0:2]); mm = int(rest[2:4]); dd = int(rest[4:6])
               cp = rest[6]
               strike_raw = int(rest[7:15])
@@ -118,34 +168,36 @@
           opt_entry_v = ffloat(os.getenv("OPTION_ENTRY_PRICE"))
           und_entry_v = ffloat(os.getenv("UNDERLYING_ENTRY_PRICE"))
 
-          csv_blob = os.getenv("CSV_BLOB") or ""
+          if not os.path.exists(POS_FILE):
+              raise SystemExit(f"{POS_FILE} not found")
 
-          # -------------------------------
-          # NEW: UPSERT_BULK (editor save)
-          # -------------------------------
-          if move_type == "UPSERT_BULK":
-              if not csv_blob.strip():
-                  raise SystemExit("UPSERT_BULK requires csv_blob")
-              ensure_docs_dir()
-              # write to repo root + docs/
-              write_text(POS_FILE, csv_blob if csv_blob.endswith("\n") else csv_blob + "\n")
-              write_text(DOCS_POS_FILE, csv_blob if csv_blob.endswith("\n") else csv_blob + "\n")
+          # Load positions
+          with open(POS_FILE, "r", newline="", encoding="utf-8") as f:
+              r = csv.DictReader(f)
+              fieldnames = r.fieldnames or []
+              rows = list(r)
 
-              # ledger
-              led_exists = os.path.exists(LEDGER)
-              with open(LEDGER, "a", newline="", encoding="utf-8") as f:
-                  w = csv.writer(f)
-                  if not led_exists:
-                      w.writerow(["ts_utc","move_id","move_type","notes"])
-                  w.writerow([datetime.utcnow().isoformat()+"Z", move_id, move_type, "bulk overwrite positions.csv + docs/positions.csv"])
-              print("✅ UPSERT_BULK applied to positions.csv and docs/positions.csv")
-              raise SystemExit(0)
+          # Force schema to your exact format
+          desired = ["ticker","option_name","option_entry_price","entry_date","underlying_entry_price","contracts"]
+          if [c.strip() for c in fieldnames] != desired:
+              fieldnames = desired
+              norm_rows = []
+              for row in rows:
+                  norm_rows.append({
+                      "ticker": row.get("ticker",""),
+                      "option_name": row.get("option_name",""),
+                      "option_entry_price": row.get("option_entry_price",""),
+                      "entry_date": row.get("entry_date",""),
+                      "underlying_entry_price": row.get("underlying_entry_price",""),
+                      "contracts": row.get("contracts","0"),
+                  })
+              rows = norm_rows
 
-          # -------------------------------
-          # Existing logic: SELL / ADD / BUY
-          # -------------------------------
-          fieldnames, rows = load_positions()
-          fieldnames, rows = normalize_schema(fieldnames, rows)
+          def row_contracts(row):
+              try:
+                  return max(int(float(row.get("contracts","0") or 0)), 0)
+              except:
+                  return 0
 
           def find_row():
               for row in rows:
@@ -156,14 +208,19 @@
 
           changed = False
 
-          if move_type in ("SELL","ADD"):
+          if move_type in ("SELL","ADD","DELETE"):
               if not option_name:
                   raise SystemExit(f"{move_type} requires option_name")
               if move_type == "SELL" and sell_n <= 0:
                   raise SystemExit("SELL requires sell_contracts > 0")
               if move_type == "ADD" and add_n <= 0:
                   raise SystemExit("ADD requires add_contracts > 0")
-
+              if move_type == "DELETE":
+                  row = find_row()
+                  if row is None:
+                      raise SystemExit(f"Could not find position to DELETE: {ticker} | {option_name}")
+                  rows.remove(row)
+                  changed = True
               row = find_row()
               if row is None:
                   raise SystemExit(f"Could not find position to {move_type}: {ticker} | {option_name}")
@@ -178,6 +235,7 @@
               if buy_n <= 0:
                   raise SystemExit("BUY requires buy_contracts > 0")
 
+              # Build option_name if missing using OCC
               if not option_name:
                   decoded = decode_occ(option_symbol)
                   if not decoded:
@@ -208,6 +266,7 @@
           else:
               raise SystemExit(f"Unknown move_type={move_type}")
 
+          # Write positions.csv
           if changed:
               tmp = POS_FILE + ".tmp"
               with open(tmp, "w", newline="", encoding="utf-8") as f:
@@ -215,20 +274,11 @@
                   w.writeheader()
                   w.writerows(rows)
               os.replace(tmp, POS_FILE)
-
-              # also copy to docs
-              ensure_docs_dir()
-              tmp2 = DOCS_POS_FILE + ".tmp"
-              with open(tmp2, "w", newline="", encoding="utf-8") as f:
-                  w = csv.DictWriter(f, fieldnames=fieldnames)
-                  w.writeheader()
-                  w.writerows(rows)
-              os.replace(tmp2, DOCS_POS_FILE)
-
-              print("✅ positions.csv updated and copied to docs/positions.csv")
+              print("positions.csv updated")
           else:
               print("No changes needed")
 
+          # Ledger append
           led_exists = os.path.exists(LEDGER)
           with open(LEDGER, "a", newline="", encoding="utf-8") as f:
               w = csv.writer(f)
@@ -241,4 +291,28 @@
                   f"{opt_entry_v:.4f}" if opt_entry_v else "",
                   f"{und_entry_v:.2f}" if und_entry_v else "",
               ])
+
+          # Mirror into docs/ for GitHub Pages (ALWAYS if changed)
+          if changed:
+              os.makedirs(DOCS_DIR, exist_ok=True)
+              shutil.copyfile(POS_FILE, DOCS_POS)
+              shutil.copyfile(LEDGER, DOCS_LED)
+              print("Mirrored to docs/positions.csv and docs/executions_ledger.csv")
           PY
+
+      - name: Commit & push (includes docs mirror)
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # add both source + docs mirror
+          git add positions.csv executions_ledger.csv docs/positions.csv docs/executions_ledger.csv
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Apply move + mirror to docs [auto]"
+          git push
