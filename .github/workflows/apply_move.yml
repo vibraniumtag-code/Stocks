@@ -1,0 +1,54 @@
+name: Apply Portfolio Move
+
+on:
+  workflow_dispatch:
+    inputs:
+      move_id:
+        description: "MoveId from the plan table (e.g., SELL|AAPL|AAPL 2026-02-20 C 200)"
+        required: true
+        type: string
+      decision:
+        description: "executed | skip | revert"
+        required: true
+        default: "executed"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas
+
+      - name: Apply move to positions.csv
+        env:
+          MOVE_ID: ${{ inputs.move_id }}
+          DECISION: ${{ inputs.decision }}
+        run: |
+          python apply_move.py --move-id "${MOVE_ID}" --decision "${DECISION}"
+
+      - name: Commit changes (if any)
+        run: |
+          git status --porcelain
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add positions.csv executions_ledger.csv
+            git commit -m "Apply move: ${{ inputs.decision }} ${{ inputs.move_id }}"
+            git push
+          else
+            echo "No changes to commit."
+          fi
