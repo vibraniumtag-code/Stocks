@@ -8,20 +8,18 @@
     :root{
       --bg:#0b1020;
       --panel:#0f172a;
-      --panel2:#0b132b;
       --border:rgba(255,255,255,.08);
       --text:rgba(255,255,255,.92);
       --muted:rgba(255,255,255,.62);
       --muted2:rgba(255,255,255,.45);
       --accent:#7c3aed;
-      --accent2:#22c55e;
+      --ok:#22c55e;
       --warn:#f59e0b;
-      --danger:#ef4444;
+      --bad:#ef4444;
       --chip:rgba(255,255,255,.07);
       --focus:rgba(124,58,237,.35);
       --shadow: 0 14px 50px rgba(0,0,0,.45);
       --radius:14px;
-      --radius2:12px;
       --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
     }
     *{ box-sizing:border-box; }
@@ -34,25 +32,17 @@
       font-family: var(--font);
     }
     .container{ max-width: 1200px; margin:0 auto; }
-    .top{
-      display:flex; gap:14px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap;
-      margin-bottom: 14px;
-    }
-    .title{
-      display:flex; flex-direction:column; gap:6px;
-    }
+    .top{ display:flex; gap:14px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; margin-bottom: 14px; }
     h1{ margin:0; font-size: 24px; letter-spacing:.2px; }
-    .sub{ color:var(--muted); font-size:13px; }
+    .sub{ color:var(--muted); font-size:13px; margin-top:6px; }
     .panel{
       background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
       border:1px solid var(--border);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
+      overflow:hidden;
     }
-    .toolbar{
-      padding:12px;
-      display:flex; gap:10px; align-items:center; flex-wrap:wrap;
-    }
+    .toolbar{ padding:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
     .chip{
       display:inline-flex; align-items:center; gap:8px;
       padding:7px 10px;
@@ -64,8 +54,8 @@
       user-select:none;
     }
     .dot{ width:8px; height:8px; border-radius:999px; background: var(--warn); box-shadow: 0 0 0 3px rgba(245,158,11,.15); }
-    .dot.ok{ background: var(--accent2); box-shadow: 0 0 0 3px rgba(34,197,94,.15); }
-    .dot.bad{ background: var(--danger); box-shadow: 0 0 0 3px rgba(239,68,68,.15); }
+    .dot.ok{ background: var(--ok); box-shadow: 0 0 0 3px rgba(34,197,94,.15); }
+    .dot.bad{ background: var(--bad); box-shadow: 0 0 0 3px rgba(239,68,68,.15); }
     .spacer{ flex:1; }
     .input{
       display:flex; align-items:center; gap:8px;
@@ -98,29 +88,12 @@
     .btn:hover{ background: rgba(255,255,255,.10); border-color: rgba(255,255,255,.14); }
     .btn:active{ transform: translateY(1px); }
     .btn:disabled{ opacity:.45; cursor:not-allowed; }
-    .btn.primary{
-      border-color: rgba(124,58,237,.35);
-      background: rgba(124,58,237,.20);
-    }
+    .btn.primary{ border-color: rgba(124,58,237,.35); background: rgba(124,58,237,.20); }
     .btn.primary:hover{ background: rgba(124,58,237,.26); }
-    .btn.success{
-      border-color: rgba(34,197,94,.35);
-      background: rgba(34,197,94,.18);
-    }
-    .btn.danger{
-      border-color: rgba(239,68,68,.35);
-      background: rgba(239,68,68,.16);
-    }
-    .grid{
-      display:grid;
-      grid-template-columns: 1fr;
-      gap:12px;
-    }
-    .tableWrap{
-      overflow:auto;
-      border-top:1px solid var(--border);
-      border-radius: 0 0 var(--radius) var(--radius);
-    }
+    .btn.success{ border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.18); }
+    .btn.danger{ border-color: rgba(239,68,68,.35); background: rgba(239,68,68,.16); }
+
+    .tableWrap{ overflow:auto; border-top:1px solid var(--border); }
     table{ width:100%; border-collapse: collapse; min-width: 980px; }
     thead th{
       position: sticky; top: 0; z-index: 2;
@@ -150,13 +123,22 @@
       background: rgba(124,58,237,.10);
     }
     td.edited{ background: rgba(245,158,11,.10); }
-    .right{ text-align:right; }
-    .muted{ color: var(--muted); }
-    .note{
-      margin-top: 10px;
-      color: var(--muted2);
+
+    .note{ margin-top: 10px; color: var(--muted2); font-size: 12.5px; line-height: 1.4; }
+
+    /* commit log panel */
+    .log{
+      margin-top: 12px;
+      border:1px solid var(--border);
+      background: rgba(0,0,0,.18);
+      border-radius: 12px;
+      padding: 10px 12px;
+      color: rgba(255,255,255,.85);
       font-size: 12.5px;
-      line-height: 1.4;
+      white-space: pre-wrap;
+      overflow:auto;
+      max-height: 220px;
+      display:none;
     }
 
     /* modal */
@@ -168,7 +150,7 @@
       z-index: 50;
     }
     .modal{
-      width: min(720px, 100%);
+      width: min(740px, 100%);
       border-radius: 16px;
       border:1px solid var(--border);
       background: rgba(15,23,42,.92);
@@ -183,13 +165,10 @@
     }
     .modalHeader h2{ margin:0; font-size: 16px; }
     .modalBody{ padding: 14px; display:grid; gap:12px; }
-    .row{
-      display:grid; gap:8px;
-      grid-template-columns: 1fr 1fr;
-    }
+    .row{ display:grid; gap:8px; grid-template-columns: 1fr 1fr; }
     .field{ display:grid; gap:6px; }
     label{ font-size: 12px; color: var(--muted); }
-    .field input, .field textarea{
+    .field input{
       width:100%;
       border:1px solid var(--border);
       background: rgba(0,0,0,.18);
@@ -199,17 +178,7 @@
       outline:none;
       font-size: 13px;
     }
-    .field textarea{ min-height: 70px; resize: vertical; }
-    .modalFooter{
-      padding: 12px 14px;
-      border-top: 1px solid var(--border);
-      display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap;
-    }
-    .help{
-      color: var(--muted2);
-      font-size: 12px;
-      line-height: 1.35;
-    }
+    .help{ color: var(--muted2); font-size: 12px; line-height: 1.35; }
     pre.err{
       background: rgba(239,68,68,.10);
       border: 1px solid rgba(239,68,68,.22);
@@ -220,24 +189,21 @@
       margin:0;
       font-size: 12px;
     }
-    .kbd{
-      border:1px solid var(--border);
-      background: rgba(255,255,255,.05);
-      border-bottom-color: rgba(255,255,255,.12);
-      padding: 2px 7px;
-      border-radius: 8px;
-      font-size: 12px;
-      color: rgba(255,255,255,.78);
+    .modalFooter{
+      padding: 12px 14px;
+      border-top: 1px solid var(--border);
+      display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap;
     }
+    a{ color:#c4b5fd; }
   </style>
 </head>
 
 <body>
 <div class="container">
   <div class="top">
-    <div class="title">
+    <div>
       <h1>Positions</h1>
-      <div class="sub">Edit in place • Sort columns • Add/Delete rows • Download or Commit to GitHub</div>
+      <div class="sub">Edit in place • Sort • Add/Delete • Download • Commit to GitHub</div>
     </div>
   </div>
 
@@ -249,15 +215,16 @@
 
       <div class="spacer"></div>
 
-      <div class="input" title="Filter rows">
+      <div class="input">
         🔎 <input id="filter" placeholder="Filter rows…" />
       </div>
 
-      <button class="btn" id="addRowBtn">➕ Add row</button>
-      <button class="btn danger" id="deleteRowsBtn" disabled>🗑️ Delete selected</button>
-      <button class="btn" id="downloadBtn" disabled>⬇️ Download CSV</button>
-      <button class="btn primary" id="commitBtn" disabled>✅ Commit to GitHub</button>
-      <button class="btn" id="resetBtn" disabled>↩️ Reset</button>
+      <!-- IMPORTANT: type="button" avoids iOS Safari weird submit/scroll behavior -->
+      <button type="button" class="btn" id="addRowBtn">➕ Add row</button>
+      <button type="button" class="btn danger" id="deleteRowsBtn" disabled>🗑️ Delete selected</button>
+      <button type="button" class="btn" id="downloadBtn" disabled>⬇️ Download CSV</button>
+      <button type="button" class="btn primary" id="commitBtn" disabled>✅ Commit to GitHub</button>
+      <button type="button" class="btn" id="resetBtn" disabled>↩️ Reset</button>
     </div>
 
     <div class="tableWrap">
@@ -266,11 +233,11 @@
   </div>
 
   <div class="note">
-    Tip: Click a column header to sort. Use <span class="kbd">Download CSV</span> for a safe offline save.
-    <br>
-    “Commit to GitHub” uses the GitHub API and requires a fine-grained token with <span class="kbd">Contents: Read & Write</span> for this repo.
-    Never hardcode tokens into the HTML.
+    If commit fails, check the log panel below — it will show the exact GitHub API error (401/403/404/409 etc).
+    Branch protection can block direct writes.
   </div>
+
+  <div id="log" class="log"></div>
 </div>
 
 <!-- Commit Modal -->
@@ -279,15 +246,15 @@
     <div class="modalHeader">
       <div>
         <h2>Commit updated CSV to GitHub</h2>
-        <div class="help">This will overwrite <b>docs/positions.csv</b> on your selected branch.</div>
+        <div class="help">Overwrites <b>docs/positions.csv</b> on the selected branch.</div>
       </div>
-      <button class="btn" id="closeModalBtn">✖</button>
+      <button type="button" class="btn" id="closeModalBtn">✖</button>
     </div>
 
     <div class="modalBody">
       <div class="row">
         <div class="field">
-          <label>Repo owner (e.g. your GitHub username)</label>
+          <label>Repo owner</label>
           <input id="owner" placeholder="owner" />
         </div>
         <div class="field">
@@ -300,6 +267,7 @@
         <div class="field">
           <label>Branch</label>
           <input id="branch" placeholder="main" />
+          <div class="help">If main is protected, try committing to a new branch like <b>web-edits</b> and open a PR.</div>
         </div>
         <div class="field">
           <label>Path to write</label>
@@ -313,32 +281,22 @@
       </div>
 
       <div class="field">
-        <label>GitHub token (fine-grained PAT) — NOT saved unless you choose</label>
-        <input id="token" type="password" placeholder="ghp_… or github_pat_…" />
-        <div class="help">
-          Create a <b>fine-grained</b> token scoped to this repo with <b>Contents: Read & Write</b>.
-          If your repo is public, don’t use this approach (anyone could copy your page and trick you). Best for private repos.
-        </div>
-      </div>
-
-      <div class="field">
-        <label><input type="checkbox" id="remember"> Remember token in this browser (localStorage) — optional</label>
-        <div class="help">Not recommended on shared computers.</div>
+        <label>GitHub token (fine-grained PAT with Contents: Read & Write)</label>
+        <input id="token" type="password" placeholder="github_pat_..." />
       </div>
 
       <div id="commitResult"></div>
     </div>
 
     <div class="modalFooter">
-      <button class="btn" id="testBtn">🔍 Test access</button>
-      <button class="btn success" id="doCommitBtn">✅ Commit now</button>
+      <button type="button" class="btn" id="testBtn">🔍 Test access</button>
+      <button type="button" class="btn success" id="doCommitBtn">✅ Commit now</button>
     </div>
   </div>
 </div>
 
 <script>
 (() => {
-  // ===== Elements =====
   const tbl = document.getElementById('tbl');
   const filterEl = document.getElementById('filter');
   const addRowBtn = document.getElementById('addRowBtn');
@@ -346,12 +304,10 @@
   const downloadBtn = document.getElementById('downloadBtn');
   const commitBtn = document.getElementById('commitBtn');
   const resetBtn = document.getElementById('resetBtn');
-
   const statusEl = document.getElementById('status');
   const dotEl = document.getElementById('dot');
   const rowsMetaEl = document.getElementById('rowsMeta');
 
-  // modal
   const modalOverlay = document.getElementById('modalOverlay');
   const closeModalBtn = document.getElementById('closeModalBtn');
   const ownerEl = document.getElementById('owner');
@@ -360,12 +316,17 @@
   const pathEl = document.getElementById('path');
   const msgEl = document.getElementById('message');
   const tokenEl = document.getElementById('token');
-  const rememberEl = document.getElementById('remember');
   const testBtn = document.getElementById('testBtn');
   const doCommitBtn = document.getElementById('doCommitBtn');
   const commitResult = document.getElementById('commitResult');
 
-  // ===== State =====
+  const logEl = document.getElementById('log');
+  const log = (s) => {
+    logEl.style.display = 'block';
+    logEl.textContent += (logEl.textContent ? "\n" : "") + s;
+  };
+  const clearLog = () => { logEl.textContent = ''; logEl.style.display = 'none'; };
+
   const csvUrl = 'positions.csv?ts=' + Date.now(); // docs/positions.html → docs/positions.csv
   let headers = [];
   let data = [];
@@ -373,7 +334,6 @@
   let sortState = { col: -1, dir: 1 };
   let dirty = false;
 
-  // ===== Helpers =====
   const setStatus = (kind, text) => {
     statusEl.textContent = text;
     dotEl.className = 'dot ' + (kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : '');
@@ -385,7 +345,6 @@
     commitBtn.disabled = false;
   };
 
-  // CSV parse with quotes
   const parseCSV = (text) => {
     const rows = [];
     let row = [], cur = '', inQuotes = false;
@@ -555,34 +514,29 @@
   // ===== Modal controls =====
   const openModal = () => {
     commitResult.innerHTML = '';
+    clearLog();
     modalOverlay.style.display = 'flex';
 
-    // Try to auto-fill owner/repo from location if possible
-    // URL looks like https://owner.github.io/repo/positions.html
+    // Auto-fill owner/repo from Pages URL: https://owner.github.io/repo/positions.html
     try{
-      const host = location.hostname; // owner.github.io
-      const parts = location.pathname.split('/').filter(Boolean); // [repo, positions.html]
-      const ownerGuess = host.split('.')[0];
+      const ownerGuess = location.hostname.split('.')[0];
+      const parts = location.pathname.split('/').filter(Boolean);
+      const repoGuess = parts[0] || '';
       if (!ownerEl.value) ownerEl.value = ownerGuess || '';
-      if (!repoEl.value) repoEl.value = parts[0] || '';
+      if (!repoEl.value) repoEl.value = repoGuess;
       if (!branchEl.value) branchEl.value = 'main';
     }catch(e){}
-
-    // Load remembered token if selected
-    const saved = localStorage.getItem('pm_github_token');
-    if (saved && !tokenEl.value) tokenEl.value = saved;
-    rememberEl.checked = !!saved;
   };
-
-  const closeModal = () => {
-    modalOverlay.style.display = 'none';
-  };
+  const closeModal = () => { modalOverlay.style.display = 'none'; };
 
   commitBtn.addEventListener('click', openModal);
   closeModalBtn.addEventListener('click', closeModal);
   modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
 
-  const setResult = (html) => { commitResult.innerHTML = html; };
+  const setResultError = (e) => {
+    commitResult.innerHTML = `<pre class="err">${String(e && e.stack ? e.stack : e)}</pre>`;
+  };
+  const setResultOk = (html) => { commitResult.innerHTML = html; };
 
   const apiHeaders = (token) => ({
     'Accept': 'application/vnd.github+json',
@@ -590,23 +544,20 @@
     'X-GitHub-Api-Version': '2022-11-28'
   });
 
-  const getFileSHA = async ({owner, repo, path, branch, token}) => {
-    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path).replace(/%2F/g,'/')}` +
-                `?ref=${encodeURIComponent(branch)}`;
+  const ghPath = (p) => encodeURIComponent(p).replace(/%2F/g,'/');
+
+  const getFileInfo = async ({owner, repo, path, branch, token}) => {
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}?ref=${encodeURIComponent(branch)}`;
     const res = await fetch(url, { headers: apiHeaders(token) });
-    if (res.status === 404) return null; // file doesn't exist yet
-    if (!res.ok) throw new Error(`Failed to read file: HTTP ${res.status}`);
-    const json = await res.json();
-    return json.sha || null;
+    const text = await res.text();
+    let json = {};
+    try { json = JSON.parse(text); } catch {}
+    return { res, json, raw: text };
   };
 
   const putFile = async ({owner, repo, path, branch, token, message, contentBase64, sha}) => {
-    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path).replace(/%2F/g,'/')}`;
-    const body = {
-      message,
-      content: contentBase64,
-      branch
-    };
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}`;
+    const body = { message, content: contentBase64, branch };
     if (sha) body.sha = sha;
 
     const res = await fetch(url, {
@@ -614,65 +565,76 @@
       headers: { ...apiHeaders(token), 'Content-Type':'application/json' },
       body: JSON.stringify(body)
     });
-    const json = await res.json().catch(() => ({}));
+    const raw = await res.text();
+    let json = {};
+    try { json = JSON.parse(raw); } catch {}
     if (!res.ok) {
       const msg = json && json.message ? json.message : `HTTP ${res.status}`;
-      throw new Error(`Commit failed: ${msg}`);
+      const details = raw ? `\nRaw: ${raw}` : '';
+      throw new Error(`Commit failed (${res.status}): ${msg}${details}`);
     }
     return json;
   };
 
   const b64encodeUTF8 = (str) => {
-    // base64 for UTF-8
     const bytes = new TextEncoder().encode(str);
     let bin = '';
-    bytes.forEach(b => bin += String.fromCharCode(b));
+    for (const b of bytes) bin += String.fromCharCode(b);
     return btoa(bin);
   };
 
   testBtn.addEventListener('click', async () => {
     try{
-      setResult('');
+      clearLog();
       const owner = ownerEl.value.trim();
       const repo = repoEl.value.trim();
-      const branch = branchEl.value.trim() || 'main';
-      const path = pathEl.value.trim() || 'docs/positions.csv';
+      const branch = (branchEl.value.trim() || 'main');
+      const path = (pathEl.value.trim() || 'docs/positions.csv');
       const token = tokenEl.value.trim();
 
       if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
-      const sha = await getFileSHA({owner, repo, path, branch, token});
-      setResult(`<div class="chip"><span class="dot ok"></span><span>Access OK. Current SHA: <b>${sha ? sha.slice(0,7) : '(new file)'}</b></span></div>`);
+
+      log(`TEST → owner=${owner} repo=${repo} branch=${branch} path=${path}`);
+      const { res, json, raw } = await getFileInfo({owner, repo, path, branch, token});
+      log(`TEST ← HTTP ${res.status}`);
+      if (!res.ok && res.status !== 404) {
+        throw new Error(`Test failed (${res.status}): ${json.message || raw}`);
+      }
+      const sha = (res.status === 404) ? null : (json.sha || null);
+
+      setResultOk(`<div class="chip"><span class="dot ok"></span><span>Access OK • SHA: <b>${sha ? sha.slice(0,7) : '(new file)'}</b></span></div>`);
     }catch(e){
-      setResult(`<pre class="err">${String(e && e.stack ? e.stack : e)}</pre>`);
+      setResultError(e);
     }
   });
 
   doCommitBtn.addEventListener('click', async () => {
     try{
-      setResult('');
+      clearLog();
       const owner = ownerEl.value.trim();
       const repo = repoEl.value.trim();
-      const branch = branchEl.value.trim() || 'main';
-      const path = pathEl.value.trim() || 'docs/positions.csv';
-      const message = msgEl.value.trim() || 'Update positions.csv (web)';
+      const branch = (branchEl.value.trim() || 'main');
+      const path = (pathEl.value.trim() || 'docs/positions.csv');
+      const message = (msgEl.value.trim() || 'Update positions.csv (web)');
       const token = tokenEl.value.trim();
 
       if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
 
-      // Remember token if user chose
-      if (rememberEl.checked) localStorage.setItem('pm_github_token', token);
-      else localStorage.removeItem('pm_github_token');
+      log(`COMMIT → owner=${owner} repo=${repo} branch=${branch} path=${path}`);
+      setResultOk(`<div class="chip"><span class="dot"></span><span>Committing…</span></div>`);
+
+      const info = await getFileInfo({owner, repo, path, branch, token});
+      log(`READ ← HTTP ${info.res.status}`);
+      if (!info.res.ok && info.res.status !== 404) {
+        throw new Error(`Cannot read target file (${info.res.status}): ${info.json.message || info.raw}`);
+      }
+      const sha = (info.res.status === 404) ? null : (info.json.sha || null);
 
       const csv = toCSV(headers, data);
       const contentBase64 = b64encodeUTF8(csv);
 
-      setResult(`<div class="chip"><span class="dot"></span><span>Committing…</span></div>`);
-
-      const sha = await getFileSHA({owner, repo, path, branch, token});
       const result = await putFile({owner, repo, path, branch, token, message, contentBase64, sha});
-
-      const commitUrl = (result && result.commit && result.commit.html_url) ? result.commit.html_url : '';
-      const contentUrl = (result && result.content && result.content.html_url) ? result.content.html_url : '';
+      log(`WRITE ← OK`);
 
       // Mark clean
       originalData = deepCopy(data);
@@ -680,15 +642,19 @@
       resetBtn.disabled = true;
       commitBtn.disabled = true;
 
-      setResult(`
+      const commitUrl = result?.commit?.html_url || '';
+      const contentUrl = result?.content?.html_url || '';
+
+      setResultOk(`
         <div class="chip"><span class="dot ok"></span><span><b>Committed successfully.</b></span></div>
         <div class="help">
-          ${commitUrl ? `Commit: <a href="${commitUrl}" target="_blank" rel="noreferrer" style="color:#c4b5fd;">open</a><br>` : ''}
-          ${contentUrl ? `File: <a href="${contentUrl}" target="_blank" rel="noreferrer" style="color:#c4b5fd;">open</a>` : ''}
+          ${commitUrl ? `Commit: <a href="${commitUrl}" target="_blank" rel="noreferrer">open</a><br>` : ''}
+          ${contentUrl ? `File: <a href="${contentUrl}" target="_blank" rel="noreferrer">open</a>` : ''}
         </div>
       `);
     }catch(e){
-      setResult(`<pre class="err">${String(e && e.stack ? e.stack : e)}</pre>`);
+      setResultError(e);
+      // keep log visible
     }
   });
 
@@ -719,7 +685,7 @@
       rowsMetaEl.textContent = '—';
       tbl.innerHTML = `<tbody><tr><td style="padding:14px;color:rgba(255,255,255,.8)">
         Failed to load CSV. Check that <b>docs/positions.csv</b> exists and you’re using the GitHub Pages URL.
-        <br><br><span class="muted">${String(e)}</span>
+        <br><br><span style="color:rgba(255,255,255,.6)">${String(e)}</span>
       </td></tr></tbody>`;
     }
   })();
