@@ -35,6 +35,7 @@ jobs:
             --top 5000 \
             --save entries_tomorrow.csv \
             --emit-checklist 1
+            --emit-html 1
 
       - name: Email checklist (text body only)
         env:
