@@ -1,6 +1,6 @@
 // ====== CONFIG: set these ======
 const OWNER = "<YOUR_GITHUB_OWNER>";
-const REPO  = "<YOUR_REPO_NAME>";
+const REPO  = "Stocks";
 const WORKFLOW_FILE = "apply_move.yml"; // must match .github/workflows/apply_move.yml
 const BRANCH = "main";
 const PLAN_PATH = "../portfolio_plan.csv"; // file in repo root
