@@ -124,6 +124,8 @@ def num(x, n=2) -> str:
 CSV_FILE = env_str("CSV_FILE", "positions.csv")
 PLAN_FILE = env_str("PLAN_FILE", "portfolio_plan.csv")
 
+DOCS_DIR = env_str("DOCS_DIR", "docs")
+PLAN_DOCS_FILE = env_str("PLAN_DOCS_FILE", os.path.join(DOCS_DIR, os.path.basename(PLAN_FILE)))
 
 MAX_NEW_PER_RUN = env_int("MAX_NEW_PER_RUN", 2)
 MAX_CONTRACTS_PER_POSITION = env_int("MAX_CONTRACTS_PER_POSITION", 6)
@@ -1090,8 +1092,16 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
     plan_rows.extend(buy_rows)
     plan_df = pd.DataFrame(plan_rows)
     plan_df.to_csv(PLAN_FILE, index=False)
+    
 # Also save a copy into docs/ for GitHub Pages dashboard
-    # ---- Plain text (stdout fallback)
+    try:
+        os.makedirs(DOCS_DIR, exist_ok=True)
+        plan_df.to_csv(PLAN_DOCS_FILE, index=False)
+        report_lines.append(f"DIAG: Plan copied to docs: {PLAN_DOCS_FILE}")
+    except Exception as e:
+        report_lines.append(f"DIAG: Failed to write docs plan copy: {e}")
+    # Also save a copy into docs/ for GitHub Pages dashboard
+        # ---- Plain text (stdout fallback)
     header_txt = []
     header_txt.append(f"PORTFOLIO MANAGER — {datetime.now().strftime('%Y-%m-%d')}")
     header_txt.append(
