@@ -1,17 +1,20 @@
-# unified_turtle_entries_only.py
-# Nightly runner: outputs ONLY fresh entries for tomorrow (no ledger),
-# prints a ready-to-trade checklist, AND can emit a nice HTML email view.
-#
-# New in this version:
-# - ✅ HTML email output (scrollable code + checklist + entries table)
-# - ✅ Optional: saves a .html next to the CSV via --emit-html 1
-# - Keeps existing filters + CSV + TXT checklist
-#
-# Usage:
-#   python unified_turtle_entries_only.py --system 1 --allow-shorts 1 --top 300 \
-#     --save entries_tomorrow.csv --emit-checklist 1 --emit-html 1
-#
-# -----------------------------------------------------------------------------
+#!/usr/bin/env python3
+"""
+unified_turtle_entries_only.py
+
+Nightly runner:
+- outputs ONLY fresh entries for tomorrow (no ledger)
+- prints a ready-to-trade checklist
+- emits a clean HTML email view (table + checklist + command + optional script section)
+
+Usage:
+  python unified_turtle_entries_only.py --system 1 --allow-shorts 1 --top 300 \
+    --save entries_tomorrow.csv --emit-checklist 1 --emit-html 1
+
+Notes:
+- HTML is generated to a file by default (next to the CSV). If you want to EMAIL it, wire it to SMTP like your exit_check.py.
+- Works best with wide emails; the entries table is horizontally scrollable.
+"""
 
 import os, re, argparse, html
 from datetime import datetime, date
@@ -24,6 +27,7 @@ try:
     import yfinance as yf
 except Exception:
     yf = None
+
 
 # ---------------------- Config defaults ----------------------
 SYSTEM_DEFAULT          = 1        # 1 => 20/10, 2 => 55/20
@@ -49,9 +53,11 @@ FALLBACK_UNIVERSE = [
     "AMD","QCOM","TXN","CSCO","UPS","CAT","GE","HON","IBM","AXP"
 ]
 
+
 # ---------------------- Helpers ----------------------
 def looks_like_ticker(s: str) -> bool:
     return bool(re.match(r"^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$", (s or "").strip().upper()))
+
 
 def _normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
@@ -74,11 +80,13 @@ def _normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
         return res.dropna(subset=["Open","High","Low","Close"])
     return pd.DataFrame()
 
+
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     h,l,c = df["High"], df["Low"], df["Close"]
     prev = c.shift(1)
     tr = pd.concat([(h-l),(h-prev).abs(),(l-prev).abs()], axis=1).max(axis=1)
     return tr.rolling(period).mean()
+
 
 def breakout_signals(df: pd.DataFrame, entry_lb: int, exit_lb: int, confirm_on_close: bool = True):
     highs = df["High"].rolling(entry_lb).max()
@@ -88,6 +96,7 @@ def breakout_signals(df: pd.DataFrame, entry_lb: int, exit_lb: int, confirm_on_c
     long_entry  = df["Close"] >= highs
     short_entry = df["Close"] <= lows
     return long_entry, short_entry
+
 
 def find_target_expiration(ticker: str, min_dte: int, max_dte: int, target_dte: int) -> Optional[str]:
     if yf is None:
@@ -110,6 +119,7 @@ def find_target_expiration(ticker: str, min_dte: int, max_dte: int, target_dte: 
         return candidates[0][2]
     except Exception:
         return None
+
 
 def select_option(options_df: pd.DataFrame, spot: float, is_call: bool, target_delta: float) -> Optional[dict]:
     if options_df is None or options_df.empty:
@@ -139,9 +149,11 @@ def select_option(options_df: pd.DataFrame, spot: float, is_call: bool, target_d
         df["mny"] = (spot / df["strike"] - 1.0).abs()
     return df.nsmallest(1, "mny").iloc[0].to_dict()
 
+
 def build_universe(top: int) -> List[str]:
     top = max(1, min(top, len(FALLBACK_UNIVERSE)))
     return FALLBACK_UNIVERSE[:top]
+
 
 # ---------------------- Main pipeline ----------------------
 def generate_new_entries(top: int,
@@ -280,12 +292,14 @@ def generate_new_entries(top: int,
         out = out.sort_values(["ActionOrder","Ticker"]).drop(columns=["ActionOrder"])
     return out
 
+
 # ---------------------- Checklist rendering ----------------------
 def _fmt(x, n=2):
     try:
         return f"{float(x):.{n}f}"
     except Exception:
         return str(x)
+
 
 def print_checklist(df: pd.DataFrame, date_str: str) -> str:
     title = f"Tomorrow's Entry Checklist — {date_str}"
@@ -311,46 +325,119 @@ def print_checklist(df: pd.DataFrame, date_str: str) -> str:
     print(text)
     return text
 
+
 # ---------------------- HTML Email Rendering ----------------------
+def _is_nan(x) -> bool:
+    try:
+        return bool(pd.isna(x))
+    except Exception:
+        return False
+
+
+def _fmt_cell(col: str, val) -> str:
+    if val is None or val == "" or _is_nan(val):
+        return ""
+    # price-like numbers
+    if col in {"SpotClose","StopUnderlying","TargetUnderlying","OptionStrike","OptionLast","OptionStop","OptionTarget"}:
+        try:
+            return f"{float(val):.2f}"
+        except Exception:
+            return str(val)
+    # atr/delta/iv
+    if col in {"ATR","Delta","IV"}:
+        try:
+            return f"{float(val):.3f}"
+        except Exception:
+            return str(val)
+    return str(val)
+
+
+def _th_style() -> str:
+    return "text-align:left;padding:8px;border:1px solid #e7e9f0;background:#f7fafc;font-size:12px;white-space:nowrap;"
+
+
+def _td_style(align: str = "left") -> str:
+    base = "padding:8px;border:1px solid #e7e9f0;vertical-align:top;font-size:12px;"
+    if align == "right":
+        return base + "text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;"
+    if align == "center":
+        return base + "text-align:center;white-space:nowrap;"
+    return base + "text-align:left;"
+
+
+def _badge(text: str, bg: str, fg: str) -> str:
+    return f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;font-weight:800;font-size:11px;background:{bg};color:{fg};border:1px solid rgba(0,0,0,.06);white-space:nowrap;'>{html.escape(text)}</span>"
+
+
+def _action_badge(action: str) -> str:
+    a = (action or "").upper()
+    if a == "BUY_CALL":
+        return _badge("BUY_CALL", "#ecfdf5", "#065f46")
+    if a == "BUY_PUT":
+        return _badge("BUY_PUT", "#fff7ed", "#9a3412")
+    return _badge(action or "", "#f3f4f6", "#374151")
+
+
+def render_entries_table_html(df: pd.DataFrame) -> str:
+    if df is None or df.empty:
+        return """
+          <div style="padding:12px 14px;border:1px solid #e6edf5;border-radius:12px;background:#f7fafc;font-size:13px;">
+            ✅ No new entries for tomorrow.
+          </div>
+        """
+
+    cols = [
+        "Ticker","Action","SpotClose","ATR","StopUnderlying","TargetUnderlying",
+        "Expiry","OptionType","OptionStrike","OptionLast","OptionStop","OptionTarget",
+        "OptionSymbol","Delta","IV"
+    ]
+    cols = [c for c in cols if c in df.columns]
+    view = df[cols].copy()
+
+    # Build manual HTML table (more control than pandas.to_html for email)
+    head = "".join([f"<th style='{_th_style()}'>{html.escape(c)}</th>" for c in cols])
+
+    body_rows = []
+    numeric_right = {"SpotClose","ATR","StopUnderlying","TargetUnderlying","OptionStrike","OptionLast","OptionStop","OptionTarget","Delta","IV"}
+
+    for _, r in view.iterrows():
+        tds = []
+        for c in cols:
+            if c == "Action":
+                cell = _action_badge(str(r.get(c, "")))
+                tds.append(f"<td style='{_td_style('center')}'>{cell}</td>")
+            else:
+                raw = r.get(c, "")
+                cell_txt = html.escape(_fmt_cell(c, raw))
+                align = "right" if c in numeric_right else "left"
+                tds.append(f"<td style='{_td_style(align)}'>{cell_txt}</td>")
+        body_rows.append("<tr>" + "".join(tds) + "</tr>")
+
+    table = f"""
+      <div style="border:1px solid #e7e9f0;border-radius:12px;overflow:hidden;">
+        <div style="overflow:auto;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead><tr>{head}</tr></thead>
+            <tbody>
+              {''.join(body_rows)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    """
+    return table
+
+
 def render_html_email(df: pd.DataFrame,
                       checklist_text: str,
                       script_text: str,
                       date_str: str,
                       args: argparse.Namespace) -> str:
-    # Escape untrusted content
     safe_checklist = html.escape(checklist_text or "")
     safe_script = html.escape(script_text or "")
     safe_date = html.escape(date_str)
 
-    # Build an email-safe table (inline-ish styles, no fancy CSS dependencies)
-    if df is None or df.empty:
-        table_html = """
-          <div style="padding:12px 14px;border:1px solid #e6edf5;border-radius:12px;background:#f7fafc;font-size:13px;">
-            ✅ No new entries for tomorrow.
-          </div>
-        """
-    else:
-        # Keep columns stable and readable
-        cols = [
-            "Ticker","Action","SpotClose","ATR","StopUnderlying","TargetUnderlying",
-            "Expiry","OptionType","OptionStrike","OptionLast","OptionStop","OptionTarget","OptionSymbol","Delta","IV"
-        ]
-        cols = [c for c in cols if c in df.columns]
-        view = df[cols].copy()
-
-        # Convert to HTML (escape is handled by pandas; we still keep it simple)
-        table_html = view.to_html(index=False, escape=True, border=0)
-        # Add light styling using string replace (email-friendly)
-        table_html = table_html.replace(
-            "<table",
-            "<table style='width:100%;border-collapse:collapse;font-size:12px;'"
-        ).replace(
-            "<th>",
-            "<th style='text-align:left;padding:8px;border:1px solid #e7e9f0;background:#f7fafc;'>"
-        ).replace(
-            "<td>",
-            "<td style='padding:8px;border:1px solid #e7e9f0;vertical-align:top;'>"
-        )
+    table_html = render_entries_table_html(df)
 
     usage = (
         f"python unified_turtle_entries_only.py --system {args.system} --allow-shorts {int(bool(args.allow_shorts))} "
@@ -376,6 +463,7 @@ def render_html_email(df: pd.DataFrame,
 
       <!-- Content -->
       <div style="padding:18px 22px 8px;">
+
         <!-- Badges -->
         <div style="margin-bottom:10px;">
           <span style="display:inline-block;font-size:12px;font-weight:700;padding:6px 10px;border-radius:999px;margin:0 8px 8px 0;background:#eef2ff;color:#2b3a88;">✅ Fresh entries</span>
@@ -396,6 +484,9 @@ def render_html_email(df: pd.DataFrame,
         <div style="margin:14px 0 18px;">
           <div style="font-size:14px;font-weight:800;margin:0 0 10px;">📈 New Entries (Tomorrow)</div>
           {table_html}
+          <div style="margin-top:8px;font-size:12px;color:#6b7280;">
+            Tip: table scrolls horizontally on mobile.
+          </div>
         </div>
 
         <!-- Checklist -->
@@ -434,6 +525,7 @@ def render_html_email(df: pd.DataFrame,
 """
     return html_out
 
+
 # ---------------------- CLI ----------------------
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="Nightly Turtle new-entry scanner (no ledger) + checklist + HTML email output")
@@ -453,6 +545,7 @@ def parse_args(argv=None):
     ap.add_argument("--emit-html", type=int, default=1, help="1=also write a .html email view next to CSV, 0=skip")
     ap.add_argument("--html-out", type=str, default="", help="Optional custom path for HTML output")
     return ap.parse_args(argv)
+
 
 def main(argv=None):
     args = parse_args(argv)
@@ -490,7 +583,6 @@ def main(argv=None):
     # Optionally save HTML email view
     if int(args.emit_html) == 1:
         try:
-            # Grab the script text for the email "Script (Reference)" section
             script_path = os.path.abspath(__file__)
             with open(script_path, "r", encoding="utf-8") as f:
                 script_text = f.read()
@@ -510,6 +602,7 @@ def main(argv=None):
         print(f"HTML email view saved to: {html_path}")
 
     return 0
+
 
 if __name__ == "__main__":
     import sys
