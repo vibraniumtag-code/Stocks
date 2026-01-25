@@ -1,34 +1,33 @@
 #!/usr/bin/env python3
 """
-portfolio_manager.py  (UPDATED WITH PYRAMIDING + HTML EMAIL TABLES)
+portfolio_manager.py  (UPDATED: TURTLE-STYLE PRETTY HTML EMAIL)
 
-What’s new:
-- ✅ Pyramiding (ADD_1) on winners, gated by:
-  - 10D + 5D structure intact (current price)
-  - ATR advice == OK (not CLOSE / VERY CLOSE / STOP HIT)
-  - Option return >= PYR_L1 / PYR_L2
-  - Budget available (PYR_ADD_BUDGET_PCT of account value per run)
-  - Max contracts cap (MAX_CONTRACTS_PER_POSITION)
-- ✅ Adds "AddContracts" + "PyramidReason" columns to the plan + email tables
-- ✅ Keeps your positions.csv format (no change required)
-- ✅ Still uses TotalNarrow scanner (DataFrame or print-only parsing)
-- ✅ pandas-safe HTML builder (no DataFrame.applymap)
-
-Important notes:
-- "Account value" here is estimated as sum(option_mark * 100 * contracts) from positions.csv.
-- Pyramiding uses a per-run budget slice to avoid overleveraging.
+What’s new in this version:
+- ✅ Email now matches your Turtle Scanner look:
+  - Dark header + date
+  - Summary cards
+  - Scrollable modern tables (mobile-friendly)
+  - Badges for Type + Recommendation
+  - Diagnostics block styled like terminal output
+- ✅ Sends HTML-ONLY email (prevents clients preferring text/plain)
+- ✅ Still saves PLAN_FILE CSV and prints a plain-text report to stdout when SMTP not ready
+- ✅ Keeps all existing trading logic (pyramiding, trims, buys)
 
 Env vars (optional):
   PYRAMID_ON=true|false (default true)
   PYR_L1=0.60  (add eligible at +60%)
   PYR_L2=1.20  (add eligible at +120%)
   PYR_ADD_BUDGET_PCT=0.05 (5% of account value per run max spend on adds)
-  PYR_REQUIRE_BOTH=true|false (default true)  # require 5D AND 10D intact
-  PYR_MAX_ADDS_PER_RUN=99 (default 99)        # safety
+  PYR_REQUIRE_BOTH=true|false (default true)
+  PYR_MAX_ADDS_PER_RUN=99 (default 99)
 
-Existing env vars still supported:
-  MAX_NEW_PER_RUN, MAX_CONTRACTS_PER_POSITION, CONTRACT_MULTIPLIER, CASH_BUFFER_PCT, ATR_PERIOD, ATR_MULTIPLIER, STRUCTURE_10, STRUCTURE_5, RECO_MODE
+Existing env vars supported:
+  MAX_NEW_PER_RUN, MAX_CONTRACTS_PER_POSITION, CONTRACT_MULTIPLIER, CASH_BUFFER_PCT,
+  ATR_PERIOD, ATR_MULTIPLIER, STRUCTURE_10, STRUCTURE_5, RECO_MODE
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO, EMAIL_MODE
+
+EMAIL_MODE:
+  always | action_only
 """
 
 import os
@@ -44,8 +43,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
 
 
 # =========================
@@ -161,19 +160,24 @@ EMAIL_MODE = env_str("EMAIL_MODE", "always").lower()  # always | action_only
 
 
 # =========================
-# EMAIL (HTML + TEXT)
+# EMAIL (HTML-ONLY like Turtle)
 # =========================
 def smtp_ready() -> bool:
     return all([SMTP_HOST, SMTP_PORT > 0, SMTP_USER, SMTP_PASS, EMAIL_TO])
 
-def send_email(subject: str, text_body: str, html_body: str) -> None:
-    msg = MIMEMultipart("alternative")
+def send_pretty_email(subject: str, html_body: str) -> None:
+    """
+    HTML-ONLY email to prevent clients from preferring text/plain.
+    """
+    msg = MIMEText(html_body, "html", "utf-8")
     msg["Subject"] = subject
-    msg["From"] = f"Scanner <{SMTP_USER}>"
     msg["To"] = EMAIL_TO
+    msg["From"] = f"Portfolio Manager <{SMTP_USER}>"
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
 
-    msg.attach(MIMEText(text_body, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    # Explicit Content-Type (some gateways are picky)
+    msg.replace_header("Content-Type", 'text/html; charset="utf-8"')
 
     if SMTP_PORT == 465:
         ctx = ssl.create_default_context()
@@ -181,51 +185,249 @@ def send_email(subject: str, text_body: str, html_body: str) -> None:
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
     else:
+        ctx = ssl.create_default_context()
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.ehlo()
-            server.starttls()
+            server.starttls(context=ctx)
             server.ehlo()
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
 
 
 # =========================
-# HTML TABLE BUILDER (pandas-safe)
+# PRETTY HTML HELPERS
 # =========================
 def html_escape(s: str) -> str:
-    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return ("" if s is None else str(s)).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-def df_to_html_table(df: pd.DataFrame, title: str) -> str:
+def _badge(text: str, kind: str = "neutral") -> str:
+    t = (text or "").strip()
+    if t == "":
+        return ""
+    styles = {
+        "good":   "background:#ecfdf5;color:#065f46;border:1px solid #d1fae5;",
+        "warn":   "background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;",
+        "bad":    "background:#fef2f2;color:#991b1b;border:1px solid #fecaca;",
+        "info":   "background:#eef2ff;color:#3730a3;border:1px solid #e0e7ff;",
+        "neutral":"background:#f3f4f6;color:#374151;border:1px solid #e5e7eb;",
+    }
+    st = styles.get(kind, styles["neutral"])
+    return f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;font-weight:800;font-size:11px;{st}white-space:nowrap;'>{html_escape(t)}</span>"
+
+def _badge_for_type(t: str) -> str:
+    u = (t or "").upper()
+    if u == "SELL":
+        return _badge("SELL", "bad")
+    if u == "BUY":
+        return _badge("BUY", "info")
+    if u == "ADD":
+        return _badge("ADD", "good")
+    if u == "HOLD":
+        return _badge("HOLD", "neutral")
+    return _badge(u, "neutral")
+
+def _badge_for_reco(r: str) -> str:
+    u = (r or "").upper()
+    if u.startswith("SELL"):
+        return _badge(u, "bad")
+    if u.startswith("ADD"):
+        return _badge(u, "good")
+    if u in ("HOLD", "NO_ACTION", "NO POSITION", "NO_POSITION"):
+        return _badge(u, "neutral")
+    return _badge(u, "neutral")
+
+def df_to_pretty_table(df: pd.DataFrame, title: str, badge_cols: Optional[Dict[str, str]] = None) -> str:
+    """
+    Email-safe scrollable table with inline styles.
+    badge_cols: dict col->("type"|"reco"|"neutral") for special rendering.
+    """
+    badge_cols = badge_cols or {}
+
     if df is None or df.empty:
-        return f"<h3 style='margin:16px 0 6px;'>{html_escape(title)}</h3><div>No rows.</div>"
+        return f"""
+        <div style="margin:0 0 16px 0;">
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">{html_escape(title)}</div>
+          <div style="padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px;background:#f9fafb;font-size:13px;">
+            ✅ No rows.
+          </div>
+        </div>
+        """
 
     safe = df.copy().fillna("")
-    safe = safe.astype(str)
-    safe = safe.apply(lambda col: col.map(html_escape))
+    # keep numeric formatting as strings if already formatted
+    safe = safe.astype(object)
 
-    ths = "".join(
-        f"<th style='border:1px solid #ddd; padding:8px; text-align:left; background:#f5f5f5;'>{html_escape(c)}</th>"
-        for c in safe.columns
-    )
+    cols = list(safe.columns)
 
-    trs = []
+    head = "".join([
+        f"<th style='text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;'>{html_escape(c)}</th>"
+        for c in cols
+    ])
+
+    # right-align likely numeric columns
+    numeric_hint = set()
+    for c in cols:
+        lc = c.lower()
+        if any(k in lc for k in ["value", "mark", "cost", "contracts", "price", "pct", "return", "dist", "atr", "iv", "delta"]):
+            numeric_hint.add(c)
+
+    rows_html = []
     for i in range(len(safe)):
-        tds = "".join(
-            f"<td style='border:1px solid #ddd; padding:8px; vertical-align:top;'>{safe.iat[i, j]}</td>"
-            for j in range(safe.shape[1])
-        )
-        bg = "#ffffff" if (i % 2 == 0) else "#fafafa"
-        trs.append(f"<tr style='background:{bg};'>{tds}</tr>")
+        r = safe.iloc[i]
+        tds = []
+        for c in cols:
+            val = r[c]
+            sval = "" if val is None else str(val)
+
+            if c in badge_cols:
+                mode = badge_cols[c]
+                if mode == "type":
+                    cell = _badge_for_type(sval)
+                    align = "center"
+                elif mode == "reco":
+                    cell = _badge_for_reco(sval)
+                    align = "center"
+                else:
+                    cell = _badge(sval, "neutral")
+                    align = "center"
+            else:
+                cell = html_escape(sval)
+                align = "right" if c in numeric_hint else "left"
+
+            bg = "#ffffff" if (i % 2 == 0) else "#fcfcfd"
+            tds.append(
+                f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;"
+                f"white-space:nowrap;text-align:{align};font-variant-numeric:tabular-nums;background:{bg};'>{cell}</td>"
+            )
+        rows_html.append("<tr>" + "".join(tds) + "</tr>")
 
     return f"""
-    <h3 style="margin:16px 0 6px;">{html_escape(title)}</h3>
-    <table style="border-collapse:collapse; width:100%; font-family:Arial, sans-serif; font-size:14px;">
-      <thead><tr>{ths}</tr></thead>
-      <tbody>
-        {''.join(trs)}
-      </tbody>
-    </table>
+    <div style="margin:0 0 16px 0;">
+      <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">{html_escape(title)}</div>
+      <div style="border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+        <div style="overflow:auto;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead><tr>{head}</tr></thead>
+            <tbody>
+              {''.join(rows_html)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:#6b7280;">Tip: table scrolls horizontally on mobile.</div>
+    </div>
     """
+
+def build_pretty_html_email(
+    date_str: str,
+    subject_title: str,
+    summary: Dict[str, str],
+    existing_df: pd.DataFrame,
+    buy_df: pd.DataFrame,
+    diagnostics_text: str,
+    plan_file: str,
+) -> str:
+    safe_date = html_escape(date_str)
+
+    # preheader (hidden preview)
+    preheader = html_escape(f"{subject_title} · {safe_date} · Plan + tables + diagnostics inside.")
+
+    # summary cards: keep 3 per row
+    def card(label: str, value: str, style: str) -> str:
+        return f"""
+        <td style="{style}border-radius:12px;padding:12px;">
+          <div style="font-size:12px;font-weight:700;opacity:.9;">{html_escape(label)}</div>
+          <div style="font-size:18px;font-weight:900;margin-top:2px;white-space:nowrap;">{html_escape(value)}</div>
+        </td>
+        """
+
+    # choose card colors like turtle
+    cards = f"""
+      <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:12px 0;margin:0 0 12px 0;">
+        <tr>
+          {card("Total value", summary.get("total",""), "background:#f9fafb;border:1px solid #e5e7eb;color:#111827;")}
+          {card("Freed cash", summary.get("freed",""), "background:#ecfdf5;border:1px solid #d1fae5;color:#065f46;")}
+          {card("New buys", summary.get("new_buys",""), "background:#eef2ff;border:1px solid #e0e7ff;color:#3730a3;")}
+        </tr>
+      </table>
+
+      <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:12px 0;margin:0 0 12px 0;">
+        <tr>
+          {card("Usable value", summary.get("usable",""), "background:#f9fafb;border:1px solid #e5e7eb;color:#111827;")}
+          {card("Pyramid budget", summary.get("pyr_budget",""), "background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;")}
+          {card("Pyramid spend / adds", summary.get("pyr_spend_adds",""), "background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;")}
+        </tr>
+      </table>
+    """
+
+    # tables
+    existing_table = df_to_pretty_table(
+        existing_df,
+        "📌 Existing Positions — Action Plan (includes pyramiding)",
+        badge_cols={"Type": "type", "Recommendation": "reco"}
+    )
+    buys_table = df_to_pretty_table(
+        buy_df,
+        "🆕 New Entries — Action Plan",
+        badge_cols={"Type": "type"}
+    )
+
+    diag = html_escape(diagnostics_text or "No diagnostics.")
+
+    return f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f6f7fb;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+    {preheader}
+  </div>
+
+  <div style="width:100%;padding:24px 12px;background:#f6f7fb;">
+    <div style="max-width:980px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
+
+      <!-- Header -->
+      <div style="background:#0b1220;color:#ffffff;padding:18px 22px;">
+        <div style="font-size:18px;font-weight:900;line-height:1.25;">📊 Portfolio Manager — Plan</div>
+        <div style="font-size:12px;opacity:.9;margin-top:6px;">{html_escape(subject_title)} · {safe_date}</div>
+      </div>
+
+      <!-- Content -->
+      <div style="padding:18px 22px;">
+        {cards}
+
+        <!-- Plan file -->
+        <div style="margin:12px 0 16px 0;">
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">📁 Plan File</div>
+          <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px;font-size:12px;line-height:1.45;">
+            Saved as: <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;background:#eef0f6;padding:2px 6px;border-radius:6px;">{html_escape(plan_file)}</span>
+          </div>
+        </div>
+
+        {existing_table}
+        {buys_table}
+
+        <!-- Diagnostics -->
+        <div style="margin:0 0 6px 0;">
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">🧾 Diagnostics</div>
+          <div style="background:#0b1220;color:#e5e7eb;border:1px solid #1f2a44;border-radius:12px;overflow:hidden;">
+            <div style="padding:10px 12px;background:#101a2f;color:#cbd5e1;font-size:12px;border-bottom:1px solid #1f2a44;">
+              stdout (copy/paste)
+            </div>
+            <pre style="margin:0;padding:12px;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;">{diag}</pre>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Footer -->
+      <div style="padding:14px 22px;background:#fbfbfd;border-top:1px solid #eef0f6;font-size:12px;color:#6b7280;">
+        Generated by portfolio_manager.py · {safe_date}
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
 
 
 # =========================
@@ -538,10 +740,8 @@ def choose_add_contracts(
         if not trend10_intact:
             return 0, "Trend not intact (need 10D)"
 
-    # Small-account friendly add sizing
     add_n = 1  # default add 1 contract
 
-    # Trigger levels
     if opt_ret >= PYR_L2:
         return add_n, f"Winner {opt_ret*100:.0f}% ≥ {PYR_L2*100:.0f}% + trend intact + ATR OK"
     if opt_ret >= PYR_L1:
@@ -679,7 +879,11 @@ def main():
 Option: {option_name}
 Contracts: {contracts}
 Option Entry: {entry_opt if entry_opt is not None else ''} | Mark: {option_mark if option_mark is not None else ''} (src: {option_src})
-Option Return: {opt_ret*100:.1f}%""" + ("" if opt_ret is not None else "") + f"""
+Option Return: {(opt_ret*100):.1f}%""" if opt_ret is not None else f"""Ticker: {ticker} ({direction})
+Option: {option_name}
+Contracts: {contracts}
+Option Entry: {entry_opt if entry_opt is not None else ''} | Mark: {option_mark if option_mark is not None else ''} (src: {option_src})
+Option Return: (n/a)""" + f"""
 
 Underlying Entry: {entry_under:.2f}
 Current: {current_price:.2f} (src: {current_src})
@@ -693,7 +897,7 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
 """
         )
 
-        # Store intermediate for pyramiding decision (we decide adds after we know total_value & budget)
+        # Store intermediate for pyramiding decision
         enriched.at[i, "_trend10_intact"] = trend10_intact
         enriched.at[i, "_trend5_intact"] = trend5_intact
         enriched.at[i, "_atr_ok"] = atr_ok
@@ -738,7 +942,7 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
             freed_cash += option_mark * CONTRACT_MULTIPLIER * s_final
 
     # =========================
-    # PYRAMIDING (adds) — after sells decided
+    # PYRAMIDING (adds)
     # =========================
     pyramid_budget = usable_value * PYR_ADD_BUDGET_PCT
     pyramid_spend = 0.0
@@ -779,14 +983,12 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
             enriched.at[i, "pyramid_reason"] = reason
             continue
 
-        # Funding check (pyramid budget only)
         cost_add = option_mark * CONTRACT_MULTIPLIER * add_n
         if (pyramid_spend + cost_add) > pyramid_budget:
             enriched.at[i, "add_contracts"] = 0
             enriched.at[i, "pyramid_reason"] = f"No pyramid budget (need {money2(cost_add)}, left {money2(pyramid_budget - pyramid_spend)})"
             continue
 
-        # Respect max contracts cap
         if contracts + add_n > MAX_CONTRACTS_PER_POSITION:
             add_n = max(0, MAX_CONTRACTS_PER_POSITION - contracts)
 
@@ -804,7 +1006,7 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
 
     report_lines.append(f"DIAG: usable_value={usable_value:.2f} pyramid_budget={pyramid_budget:.2f} pyramid_spend={pyramid_spend:.2f} adds_used={adds_used}")
 
-    # ---- Scanner + buys (still funded by freed cash only)
+    # ---- Scanner + buys (funded by freed cash only)
     report_lines.append(f"DIAG: freed_cash={freed_cash:.2f}")
     entries = run_entry_scan(report_lines)
 
@@ -888,7 +1090,7 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
     plan_df = pd.DataFrame(plan_rows)
     plan_df.to_csv(PLAN_FILE, index=False)
 
-    # ---- Plain text body (fallback)
+    # ---- Plain text (stdout fallback)
     header_txt = []
     header_txt.append(f"PORTFOLIO MANAGER — {datetime.now().strftime('%Y-%m-%d')}")
     header_txt.append(
@@ -902,7 +1104,7 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
     body_details = "\n-------------------------\n".join(report_lines) if report_lines else "No details."
     text_body = "\n".join(header_txt) + "\nDETAILS\n=======\n" + body_details
 
-    # ---- HTML body tables
+    # ---- HTML tables (pretty shell)
     existing_df = plan_df[plan_df["Type"].isin(["SELL", "HOLD", "ADD"])][
         ["Type", "Ticker", "Option", "ContractsHeld", "SellContracts", "AddContracts",
          "Recommendation", "PositionValue", "OptionMark", "Reason", "PyramidReason"]
@@ -918,41 +1120,46 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
         buy_df = buy_df[cols]
         buy_df["EstCostTotal"] = buy_df["EstCostTotal"].apply(money2)
 
-    html = f"""
-    <div style="font-family:Arial, sans-serif; color:#111;">
-      <h2 style="margin:0 0 8px;">Portfolio Manager — {datetime.now().strftime('%Y-%m-%d')}</h2>
-      <div style="margin:0 0 12px; font-size:14px;">
-        <b>Total:</b> {money2(total_value)} &nbsp;·&nbsp;
-        <b>Usable:</b> {money2(usable_value)} &nbsp;·&nbsp;
-        <b>Freed:</b> {money2(freed_cash)} &nbsp;·&nbsp;
-        <b>Pyramid budget:</b> {money2(pyramid_budget)} &nbsp;·&nbsp;
-        <b>Pyramid spend:</b> {money2(pyramid_spend)} &nbsp;·&nbsp;
-        <b>Adds:</b> {adds_used} &nbsp;·&nbsp;
-        <b>New buys:</b> {len(buy_rows)}
-      </div>
+    date_str = datetime.now().strftime("%Y-%m-%d")
 
-      {df_to_html_table(existing_df, "Existing Positions — Action Plan (includes pyramiding)")}
-      {df_to_html_table(buy_df, "New Entries — Action Plan")}
+    # subject: include counts (nice touch)
+    total_actions = 0 if plan_df is None or plan_df.empty else int((plan_df["Type"] != "HOLD").sum())
+    sell_ct = 0 if plan_df is None or plan_df.empty else int((plan_df["Type"] == "SELL").sum())
+    add_ct  = 0 if plan_df is None or plan_df.empty else int((plan_df["Type"] == "ADD").sum())
+    buy_ct  = 0 if plan_df is None or plan_df.empty else int((plan_df["Type"] == "BUY").sum())
 
-      <details style="margin-top:14px;">
-        <summary style="cursor:pointer; font-weight:bold;">Diagnostics (details)</summary>
-        <pre style="white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size:12px; background:#f7f7f7; padding:10px; border:1px solid #eee;">
-{html_escape(body_details)}
-        </pre>
-      </details>
+    if (any_action or len(buy_rows) > 0 or adds_used > 0):
+        subject = f"🚨 Portfolio Plan — {date_str} ({sell_ct} sell / {add_ct} add / {buy_ct} buy)"
+        subject_title = "Action needed"
+    else:
+        subject = f"✅ Portfolio Plan — {date_str} (no action)"
+        subject_title = "No action"
 
-      <div style="margin-top:10px; font-size:12px; color:#666;">
-        Plan file saved in runner as <b>{html_escape(PLAN_FILE)}</b>.
-      </div>
-    </div>
-    """
+    summary = {
+        "total": money2(total_value),
+        "usable": money2(usable_value),
+        "freed": money2(freed_cash),
+        "pyr_budget": money2(pyramid_budget),
+        "pyr_spend_adds": f"{money2(pyramid_spend)} / {adds_used}",
+        "new_buys": str(len(buy_rows)),
+    }
 
-    subject = "🚨 Portfolio Plan – Action Needed" if (any_action or len(buy_rows) > 0 or adds_used > 0) else "✅ Portfolio Plan – No Action"
+    html_email = build_pretty_html_email(
+        date_str=date_str,
+        subject_title=subject_title,
+        summary=summary,
+        existing_df=existing_df,
+        buy_df=buy_df,
+        diagnostics_text=body_details,
+        plan_file=PLAN_FILE,
+    )
 
     if smtp_ready():
         if EMAIL_MODE == "action_only" and subject.startswith("✅"):
+            # still save plan file; just skip email
+            print(f"EMAIL_MODE=action_only and no action — skipping email. Plan saved: {PLAN_FILE}")
             return
-        send_email(subject, text_body=text_body, html_body=html)
+        send_pretty_email(subject, html_email)
         print(f"Email sent to {EMAIL_TO}. Plan saved: {PLAN_FILE}")
     else:
         print("SMTP secrets not set — printing report instead\n")
