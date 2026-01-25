@@ -7,144 +7,189 @@ on:
         description: "Unique move id"
         required: true
         type: string
+
       move_type:
         description: "SELL | ADD | BUY | HOLD"
         required: true
         type: string
+
       ticker:
         description: "Ticker"
         required: true
         type: string
+
       option_name:
-        description: "Option name"
+        description: "Option name (existing positions)"
         required: false
         type: string
+
       sell_contracts:
+        description: "Contracts to sell"
         required: false
         type: string
         default: "0"
+
       add_contracts:
+        description: "Contracts to add"
         required: false
         type: string
         default: "0"
+
       strategy:
+        description: "BUY_CALL / BUY_PUT (BUY rows)"
         required: false
         type: string
+
       expiry:
+        description: "Expiry YYYY-MM-DD (BUY rows)"
         required: false
         type: string
+
       option_symbol:
+        description: "Option symbol (BUY rows)"
         required: false
         type: string
+
       buy_contracts:
+        description: "Contracts to buy"
         required: false
         type: string
         default: "0"
-  run: |
-    python - <<'PY'
-    import csv
-    import os
-    from datetime import datetime
 
-    POS_FILE = "positions.csv"
-    if not os.path.exists(POS_FILE):
-        raise SystemExit(f"{POS_FILE} not found")
+jobs:
+  apply:
+    runs-on: ubuntu-latest
 
-    move_type = "${{ inputs.move_type }}".strip().upper()
-    ticker = "${{ inputs.ticker }}".strip().upper()
-    option_name = "${{ inputs.option_name }}".strip()
+    permissions:
+      contents: write
 
-    sell_n = int(float(("${{ inputs.sell_contracts }}".strip() or "0")))
-    add_n  = int(float(("${{ inputs.add_contracts }}".strip() or "0")))
-    buy_n  = int(float(("${{ inputs.buy_contracts }}".strip() or "0")))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    strategy = "${{ inputs.strategy }}".strip()
-    expiry = "${{ inputs.expiry }}".strip()
-    option_symbol = "${{ inputs.option_symbol }}".strip()
+      - name: Show inputs
+        run: |
+          echo "move_id=${{ inputs.move_id }}"
+          echo "move_type=${{ inputs.move_type }}"
+          echo "ticker=${{ inputs.ticker }}"
+          echo "option_name=${{ inputs.option_name }}"
+          echo "sell_contracts=${{ inputs.sell_contracts }}"
+          echo "add_contracts=${{ inputs.add_contracts }}"
+          echo "strategy=${{ inputs.strategy }}"
+          echo "expiry=${{ inputs.expiry }}"
+          echo "option_symbol=${{ inputs.option_symbol }}"
+          echo "buy_contracts=${{ inputs.buy_contracts }}"
 
-    def to_int(x, default=0):
-        try:
-            return max(int(float(x)), 0)
-        except Exception:
-            return default
+      - name: Apply move to positions.csv
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          from datetime import datetime
 
-    def norm(s: str) -> str:
-        # normalize spaces + case for reliable matching
-        return " ".join((s or "").strip().upper().split())
+          POS_FILE = "positions.csv"
+          if not os.path.exists(POS_FILE):
+              raise SystemExit(f"{POS_FILE} not found")
 
-    # ✅ Correct: fieldnames comes from DictReader, not the file
-    with open(POS_FILE, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-        fieldnames = reader.fieldnames
+          move_type = "${{ inputs.move_type }}".strip().upper()
+          ticker = "${{ inputs.ticker }}".strip().upper()
+          option_name = "${{ inputs.option_name }}".strip()
 
-    if not fieldnames:
-        raise SystemExit("positions.csv has no header/fieldnames")
+          sell_n = int(float(("${{ inputs.sell_contracts }}".strip() or "0")))
+          add_n  = int(float(("${{ inputs.add_contracts }}".strip() or "0")))
+          buy_n  = int(float(("${{ inputs.buy_contracts }}".strip() or "0")))
 
-    changed = False
+          strategy = "${{ inputs.strategy }}".strip()
+          expiry = "${{ inputs.expiry }}".strip()
+          option_symbol = "${{ inputs.option_symbol }}".strip()
 
-    if move_type in ("SELL", "ADD"):
-        target_t = norm(ticker)
-        target_o = norm(option_name)
+          def to_int(x, default=0):
+              try:
+                  return max(int(float(x)), 0)
+              except Exception:
+                  return default
 
-        found = False
-        for r in rows:
-            if norm(r.get("ticker","")) == target_t and norm(r.get("option_name","")) == target_o:
-                found = True
-                c = to_int(r.get("contracts", 0), 0)
-                if move_type == "SELL":
-                    newc = max(c - sell_n, 0)
-                else:
-                    newc = c + add_n
-                if newc != c:
-                    r["contracts"] = str(newc)
-                    changed = True
-                break
+          def norm(s: str) -> str:
+              return " ".join((s or "").strip().upper().split())
 
-        if not found:
-            raise SystemExit(f"Could not find position for {ticker} / {option_name}")
+          with open(POS_FILE, newline="", encoding="utf-8") as f:
+              reader = csv.DictReader(f)
+              rows = list(reader)
+              fieldnames = reader.fieldnames
 
-    elif move_type == "BUY":
-        if buy_n <= 0:
-            raise SystemExit("BUY requested but buy_contracts <= 0")
+          if not fieldnames:
+              raise SystemExit("positions.csv has no header/fieldnames")
 
-        # ensure required columns exist
-        needed_cols = ["ticker","option_name","contracts","option_entry_price","underlying_entry_price"]
-        for col in needed_cols:
-            if col not in fieldnames:
-                fieldnames.append(col)
+          changed = False
 
-        new_row = {k: "" for k in fieldnames}
-        new_row["ticker"] = ticker
-        new_row["option_name"] = option_name or f"{ticker} {expiry} {strategy} {option_symbol}".strip()
-        new_row["contracts"] = str(buy_n)
-        rows.append(new_row)
-        changed = True
+          if move_type in ("SELL", "ADD"):
+              target_t = norm(ticker)
+              target_o = norm(option_name)
 
-    elif move_type == "HOLD":
-        changed = False
+              found = False
+              for r in rows:
+                  if norm(r.get("ticker","")) == target_t and norm(r.get("option_name","")) == target_o:
+                      found = True
+                      c = to_int(r.get("contracts", 0), 0)
+                      if move_type == "SELL":
+                          newc = max(c - sell_n, 0)
+                      else:
+                          newc = c + add_n
+                      if newc != c:
+                          r["contracts"] = str(newc)
+                          changed = True
+                      break
 
-    else:
-        raise SystemExit(f"Unknown move_type={move_type}")
+              if not found:
+                  raise SystemExit(f"Could not find position for {ticker} / {option_name}")
 
-    if changed:
-        tmp = POS_FILE + ".tmp"
-        with open(tmp, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            w.writerows(rows)
-        os.replace(tmp, POS_FILE)
-        print("positions.csv updated")
-    else:
-        print("No changes needed")
+          elif move_type == "BUY":
+              if buy_n <= 0:
+                  raise SystemExit("BUY requested but buy_contracts <= 0")
 
-    # ledger
-    led = "executions_ledger.csv"
-    led_exists = os.path.exists(led)
-    with open(led, "a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if not led_exists:
-            w.writerow(["ts_utc","move_type","ticker","option_name","sell_contracts","add_contracts","buy_contracts","strategy","expiry","option_symbol"])
-        w.writerow([datetime.utcnow().isoformat()+"Z", move_type, ticker, option_name, sell_n, add_n, buy_n, strategy, expiry, option_symbol])
+              needed_cols = ["ticker","option_name","contracts","option_entry_price","underlying_entry_price"]
+              for col in needed_cols:
+                  if col not in fieldnames:
+                      fieldnames.append(col)
 
-    PY
+              new_row = {k: "" for k in fieldnames}
+              new_row["ticker"] = ticker
+              new_row["option_name"] = option_name or f"{ticker} {expiry} {strategy} {option_symbol}".strip()
+              new_row["contracts"] = str(buy_n)
+              rows.append(new_row)
+              changed = True
+
+          elif move_type == "HOLD":
+              changed = False
+
+          else:
+              raise SystemExit(f"Unknown move_type={move_type}")
+
+          if changed:
+              tmp = POS_FILE + ".tmp"
+              with open(tmp, "w", newline="", encoding="utf-8") as f:
+                  w = csv.DictWriter(f, fieldnames=fieldnames)
+                  w.writeheader()
+                  w.writerows(rows)
+              os.replace(tmp, POS_FILE)
+              print("positions.csv updated")
+          else:
+              print("No changes needed")
+
+          led = "executions_ledger.csv"
+          led_exists = os.path.exists(led)
+          with open(led, "a", newline="", encoding="utf-8") as f:
+              w = csv.writer(f)
+              if not led_exists:
+                  w.writerow(["ts_utc","move_type","ticker","option_name","sell_contracts","add_contracts","buy_contracts","strategy","expiry","option_symbol"])
+              w.writerow([datetime.utcnow().isoformat()+"Z", move_type, ticker, option_name, sell_n, add_n, buy_n, strategy, expiry, option_symbol])
+
+          PY
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add positions.csv executions_ledger.csv || true
+          git commit -m "Apply move: ${{ inputs.move_type }} ${{ inputs.ticker }} (${{ inputs.move_id }})" || echo "No changes to commit"
+          git push
