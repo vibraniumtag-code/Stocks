@@ -1,0 +1,47 @@
+name: Build Dashboard Artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/**"
+      - "portfolio_plan.csv"
+      - "executions_ledger.csv"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create dashboard bundle
+        run: |
+          rm -rf dashboard
+          mkdir -p dashboard
+
+          # UI
+          cp -r docs/* dashboard/
+
+          # Data (optional if not present yet)
+          if [ -f portfolio_plan.csv ]; then cp portfolio_plan.csv dashboard/; fi
+          if [ -f executions_ledger.csv ]; then cp executions_ledger.csv dashboard/; fi
+          if [ -f positions.csv ]; then cp positions.csv dashboard/; fi
+
+          # Add a simple README inside the artifact
+          cat > dashboard/README.txt << 'EOF'
+          Portfolio Dashboard Artifact
+          - Open index.html
+          - It reads portfolio_plan.csv in the same folder
+          - Buttons dispatch workflow apply_move.yml
+          EOF
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-dashboard
+          path: dashboard
