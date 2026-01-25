@@ -98,11 +98,15 @@ jobs:
           UNDERLYING_ENTRY_PRICE: ${{ inputs.underlying_entry_price }}
         run: |
           python - <<'PY'
-          import csv, os, re
+          import csv, os, re, shutil
           from datetime import datetime
 
           POS_FILE = "positions.csv"
           LEDGER = "executions_ledger.csv"
+
+          DOCS_DIR = "docs"
+          DOCS_POS = os.path.join(DOCS_DIR, "positions.csv")
+          DOCS_LED = os.path.join(DOCS_DIR, "executions_ledger.csv")
 
           def today():
               return datetime.utcnow().strftime("%Y-%m-%d")
@@ -113,7 +117,7 @@ jobs:
               try:
                   v = float(s)
                   return v if v > 0 else None
-              except: 
+              except:
                   return None
 
           def fint(s):
@@ -125,7 +129,7 @@ jobs:
               except:
                   return 0
 
-          def norm(s): 
+          def norm(s):
               return (s or "").strip()
 
           def decode_occ(occ: str):
@@ -145,7 +149,6 @@ jobs:
               yyyy = 2000 + yy
               expiry = f"{yyyy:04d}-{mm:02d}-{dd:02d}"
               side = "C" if cp == "C" else "P"
-              # print strike nicely without trailing zeros
               if abs(strike - round(strike)) < 1e-9:
                   strike_s = str(int(round(strike)))
               else:
@@ -174,12 +177,10 @@ jobs:
               fieldnames = r.fieldnames or []
               rows = list(r)
 
-          # Ensure schema (keep your exact format)
+          # Force schema to your exact format
           desired = ["ticker","option_name","option_entry_price","entry_date","underlying_entry_price","contracts"]
-          # If file is missing headers or different, force desired
           if [c.strip() for c in fieldnames] != desired:
               fieldnames = desired
-              # normalize existing rows into desired keys
               norm_rows = []
               for row in rows:
                   norm_rows.append({
@@ -199,7 +200,6 @@ jobs:
                   return 0
 
           def find_row():
-              # match by ticker + option_name (exact)
               for row in rows:
                   if (row.get("ticker","").strip().upper() == ticker and
                       row.get("option_name","").strip() == option_name):
@@ -243,7 +243,6 @@ jobs:
               if opt_entry_v is None or und_entry_v is None:
                   raise SystemExit("BUY requires option_entry_price and underlying_entry_price (both > 0)")
 
-              # If row exists, increase contracts only; keep original entry fields
               row = find_row()
               if row is not None:
                   cur = row_contracts(row)
@@ -287,16 +286,28 @@ jobs:
                   f"{opt_entry_v:.4f}" if opt_entry_v else "",
                   f"{und_entry_v:.2f}" if und_entry_v else "",
               ])
+
+          # Mirror into docs/ for GitHub Pages (ALWAYS if changed)
+          if changed:
+              os.makedirs(DOCS_DIR, exist_ok=True)
+              shutil.copyfile(POS_FILE, DOCS_POS)
+              shutil.copyfile(LEDGER, DOCS_LED)
+              print("Mirrored to docs/positions.csv and docs/executions_ledger.csv")
           PY
 
-      - name: Commit & push
+      - name: Commit & push (includes docs mirror)
         run: |
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add positions.csv executions_ledger.csv
+
+          # add both source + docs mirror
+          git add positions.csv executions_ledger.csv docs/positions.csv docs/executions_ledger.csv
+
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
-          git commit -m "Apply move [auto]"
+
+          git commit -m "Apply move + mirror to docs [auto]"
           git push
