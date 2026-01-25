@@ -3,18 +3,37 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Positions</title>
+  <title>Positions (Editable)</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 16px; }
-    .bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom: 12px; }
+    h1 { margin: 0 0 12px; }
+    .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin: 10px 0 14px; }
     .pill { padding:6px 10px; border:1px solid #ddd; border-radius:999px; }
     .ok { color:#0a7; }
     .bad { color:#c22; }
+    button {
+      padding: 8px 10px; border: 1px solid #ddd; border-radius: 10px;
+      background: #fff; cursor: pointer;
+    }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    input[type="text"] {
+      padding: 8px 10px; border: 1px solid #ddd; border-radius: 10px; min-width: 240px;
+    }
+    .hint { color:#666; font-size: 13px; }
+    .wrap { overflow:auto; border:1px solid #eee; border-radius: 12px; }
     table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #eee; padding: 8px; font-size: 14px; }
-    th { background:#fafafa; position: sticky; top: 0; text-align:left; }
-    input { padding:8px; border:1px solid #ddd; border-radius:8px; min-width:240px; }
-    pre { background:#111; color:#eee; padding:10px; border-radius:10px; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px; font-size: 14px; white-space: nowrap; }
+    th {
+      background:#fafafa; text-align:left; position: sticky; top: 0; z-index: 2;
+      cursor: pointer; user-select: none;
+    }
+    tr:hover td { background:#fcfcfc; }
+    td[contenteditable="true"] { outline: none; }
+    td.edited { background: #fff7d6; } /* highlight edited cells */
+    .right { text-align:right; }
+    .danger { border-color:#f3c2c2; }
+    pre { background:#111; color:#eee; padding:10px; border-radius:10px; overflow:auto; }
+    .note { margin-top: 10px; }
   </style>
 </head>
 
@@ -23,8 +42,14 @@
 
   <div class="bar">
     <span class="pill" id="status">Loading…</span>
-    <span class="pill" id="meta"></span>
-    <input id="filter" placeholder="Filter rows…" />
+    <span class="pill hint" id="meta"></span>
+
+    <input id="filter" type="text" placeholder="Filter rows…" />
+
+    <button id="addRowBtn">➕ Add row</button>
+    <button id="deleteRowsBtn" disabled>🗑️ Delete selected</button>
+    <button id="downloadBtn" disabled>⬇️ Download CSV</button>
+    <button id="resetBtn" disabled>↩️ Reset to loaded</button>
   </div>
 
   <div id="error" style="display:none;">
@@ -32,9 +57,13 @@
     <pre id="errorText"></pre>
   </div>
 
-  <div style="overflow:auto;">
+  <div class="wrap">
     <table id="tbl"></table>
   </div>
+
+  <p class="hint note">
+    Editing happens in your browser. Click “Download CSV” to save changes locally, then upload/commit it to GitHub if you want it permanent.
+  </p>
 
 <script>
 (() => {
@@ -45,14 +74,34 @@
   const tbl      = document.getElementById('tbl');
   const filterEl = document.getElementById('filter');
 
+  const addRowBtn     = document.getElementById('addRowBtn');
+  const deleteRowsBtn = document.getElementById('deleteRowsBtn');
+  const downloadBtn   = document.getElementById('downloadBtn');
+  const resetBtn      = document.getElementById('resetBtn');
+
   // Same-folder load (docs/positions.html → docs/positions.csv)
   const csvUrl = 'positions.csv?ts=' + Date.now();
+
+  let headers = [];
+  let data = [];          // current (editable)
+  let originalData = [];  // pristine copy
+  let sortState = { col: -1, dir: 1 }; // dir: 1 asc, -1 desc
+  let edited = false;
 
   const setStatus = (ok, msg) => {
     statusEl.textContent = msg;
     statusEl.className = 'pill ' + (ok ? 'ok' : 'bad');
   };
 
+  const markEdited = () => {
+    edited = true;
+    resetBtn.disabled = false;
+    downloadBtn.disabled = false;
+  };
+
+  const deepCopy = (x) => JSON.parse(JSON.stringify(x));
+
+  // --- CSV parsing/writing ---
   const parseCSV = (text) => {
     const rows = [];
     let row = [], cur = '', inQuotes = false;
@@ -61,63 +110,206 @@
       const c = text[i], n = text[i + 1];
       if (c === '"' && inQuotes && n === '"') { cur += '"'; i++; continue; }
       if (c === '"') { inQuotes = !inQuotes; continue; }
+
       if (!inQuotes && (c === ',' || c === '\n' || c === '\r')) {
         row.push(cur); cur = '';
-        if (c === '\n' && row.some(v => v.trim() !== '')) rows.push(row), row = [];
+        if (c === '\n') {
+          // ignore empty trailing line
+          if (row.some(v => v.trim() !== '')) rows.push(row);
+          row = [];
+        }
         continue;
       }
       cur += c;
     }
-    if (cur || row.length) { row.push(cur); rows.push(row); }
+    if (cur.length || row.length) { row.push(cur); rows.push(row); }
     return rows;
   };
 
-  const render = (headers, data) => {
+  const csvEscape = (s) => {
+    s = (s ?? '').toString();
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+
+  const toCSV = (headers, rows) => {
+    const lines = [];
+    lines.push(headers.map(csvEscape).join(','));
+    for (const r of rows) lines.push(headers.map((_, i) => csvEscape(r[i] ?? '')).join(','));
+    return lines.join('\n') + '\n';
+  };
+
+  // --- Render ---
+  const render = () => {
+    const q = filterEl.value.toLowerCase().trim();
+
+    const filteredIdx = [];
+    data.forEach((r, idx) => {
+      const txt = r.join(' ').toLowerCase();
+      if (!q || txt.includes(q)) filteredIdx.push(idx);
+    });
+
     const thead = document.createElement('thead');
     const trh = document.createElement('tr');
-    headers.forEach(h => {
+
+    // selection checkbox column
+    const thSel = document.createElement('th');
+    thSel.textContent = '✓';
+    thSel.style.cursor = 'default';
+    trh.appendChild(thSel);
+
+    headers.forEach((h, colIdx) => {
       const th = document.createElement('th');
-      th.textContent = h;
+      const arrow = (sortState.col === colIdx) ? (sortState.dir === 1 ? ' ▲' : ' ▼') : '';
+      th.textContent = h + arrow;
+      th.title = 'Click to sort';
+      th.addEventListener('click', () => {
+        if (sortState.col === colIdx) sortState.dir *= -1;
+        else { sortState.col = colIdx; sortState.dir = 1; }
+        sortBy(colIdx, sortState.dir);
+        render();
+      });
       trh.appendChild(th);
     });
+
     thead.appendChild(trh);
 
     const tbody = document.createElement('tbody');
-    data.forEach(r => {
+    filteredIdx.forEach((rowIdx) => {
       const tr = document.createElement('tr');
-      headers.forEach((_, i) => {
+
+      // selection checkbox cell
+      const tdSel = document.createElement('td');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.rowIndex = rowIdx;
+      cb.addEventListener('change', updateDeleteBtnState);
+      tdSel.appendChild(cb);
+      tr.appendChild(tdSel);
+
+      headers.forEach((_, colIdx) => {
         const td = document.createElement('td');
-        td.textContent = (r[i] ?? '').trim();
+        td.contentEditable = "true";
+        td.spellcheck = false;
+        td.textContent = (data[rowIdx][colIdx] ?? '').toString();
+
+        td.addEventListener('input', () => {
+          data[rowIdx][colIdx] = td.textContent;
+          td.classList.add('edited');
+          markEdited();
+        });
+
         tr.appendChild(td);
       });
+
       tbody.appendChild(tr);
     });
 
     tbl.innerHTML = '';
-    tbl.append(thead, tbody);
+    tbl.appendChild(thead);
+    tbl.appendChild(tbody);
+
+    metaEl.textContent = `${filteredIdx.length} shown / ${data.length} total`;
+    updateDeleteBtnState();
   };
 
-  filterEl.addEventListener('input', () => {
-    const q = filterEl.value.toLowerCase();
-    tbl.querySelectorAll('tbody tr').forEach(tr => {
-      tr.style.display = tr.innerText.toLowerCase().includes(q) ? '' : 'none';
+  const updateDeleteBtnState = () => {
+    const anyChecked = tbl.querySelectorAll('tbody input[type="checkbox"]:checked').length > 0;
+    deleteRowsBtn.disabled = !anyChecked;
+  };
+
+  // --- Sort ---
+  const sortBy = (colIdx, dir) => {
+    // Try numeric compare if both look numeric; else string compare.
+    const num = (v) => {
+      const s = (v ?? '').toString().trim().replace(/,/g,'');
+      if (s === '') return null;
+      const n = Number(s);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    data.sort((a, b) => {
+      const av = a[colIdx] ?? '';
+      const bv = b[colIdx] ?? '';
+      const an = num(av);
+      const bn = num(bv);
+      if (an !== null && bn !== null) return (an - bn) * dir;
+      return av.toString().localeCompare(bv.toString(), undefined, { numeric: true, sensitivity: 'base' }) * dir;
     });
+  };
+
+  // --- Actions ---
+  addRowBtn.addEventListener('click', () => {
+    const newRow = headers.map(() => '');
+    data.unshift(newRow); // add to top
+    markEdited();
+    render();
+    // auto-scroll to top so you see it
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
+  deleteRowsBtn.addEventListener('click', () => {
+    const checked = Array.from(tbl.querySelectorAll('tbody input[type="checkbox"]:checked'))
+      .map(cb => Number(cb.dataset.rowIndex))
+      .sort((a,b) => b-a); // delete from end first
+
+    if (!checked.length) return;
+
+    for (const idx of checked) data.splice(idx, 1);
+    markEdited();
+    render();
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    const csv = toCSV(headers, data);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'positions.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  resetBtn.addEventListener('click', () => {
+    data = deepCopy(originalData);
+    edited = false;
+    resetBtn.disabled = true;
+    downloadBtn.disabled = true;
+    sortState = { col: -1, dir: 1 };
+    render();
+  });
+
+  filterEl.addEventListener('input', render);
+
+  // --- Load ---
   fetch(csvUrl, { cache: 'no-store' })
-    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status} while fetching positions.csv`); return r.text(); })
     .then(text => {
       const rows = parseCSV(text);
-      const headers = rows[0];
-      const data = rows.slice(1);
-      render(headers, data);
+      if (!rows.length) throw new Error('CSV loaded but is empty.');
+
+      headers = rows[0].map(x => x.trim());
+      data = rows.slice(1).map(r => {
+        // normalize row length
+        const rr = r.slice(0, headers.length);
+        while (rr.length < headers.length) rr.push('');
+        return rr;
+      });
+
+      originalData = deepCopy(data);
+
       setStatus(true, 'Loaded');
-      metaEl.textContent = `${data.length} rows`;
+      downloadBtn.disabled = false; // allow download even if unchanged
+      render();
     })
     .catch(err => {
       setStatus(false, 'Load failed');
       errBox.style.display = 'block';
-      errText.textContent = err.toString();
+      errText.textContent = err && err.stack ? err.stack : String(err);
     });
 })();
 </script>
