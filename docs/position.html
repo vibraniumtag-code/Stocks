@@ -2,107 +2,170 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Positions Editor</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Positions</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 16px; }
+    .bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom: 12px; }
+    .pill { padding:6px 10px; border:1px solid #ddd; border-radius:999px; }
+    .ok { color: #0a7; }
+    .bad { color: #c22; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #eee; padding: 8px; font-size: 14px; }
+    th { background: #fafafa; text-align: left; position: sticky; top: 0; }
+    input { padding: 8px; border: 1px solid #ddd; border-radius: 8px; min-width: 240px; }
+    .hint { color:#666; font-size: 13px; }
+    pre { background:#111; color:#eee; padding:10px; border-radius:10px; overflow:auto; }
+  </style>
 </head>
+
 <body>
-  <div class="page">
-    <header class="topbar">
-      <div class="brand">
-        <div class="logo">📒</div>
-        <div>
-          <div class="title">Positions Editor</div>
-          <div class="subtitle">Edit contracts + delete rows (updates positions.csv)</div>
-        </div>
-      </div>
+  <h1>Positions</h1>
 
-      <div class="actions">
-        <button id="btnRefresh" class="btn">🔄 Refresh</button>
-        <button id="btnToken" class="btn btn-secondary">🔑 Save Token</button>
-      </div>
-    </header>
-
-    <section class="card">
-      <div class="card-head">
-        <div class="meta">
-          <div id="lastUpdated" class="muted">Last updated: —</div>
-          <div id="fileInfo" class="muted">File: docs/positions.csv</div>
-        </div>
-        <div id="globalStatus" class="status muted">Ready.</div>
-      </div>
-
-      <div class="table-wrap">
-        <table id="posTable">
-          <thead>
-            <tr>
-              <th>Ticker</th>
-              <th>Option</th>
-              <th class="num">Entry Opt</th>
-              <th>Entry Date</th>
-              <th class="num">Entry Und</th>
-              <th class="num">Contracts</th>
-              <th class="num">Set To</th>
-              <th>Apply</th>
-              <th>Delete</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody id="posTbody">
-            <tr><td colspan="10" class="muted">Loading…</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="card-head">
-        <div class="meta">
-          <div class="title-sm">Settings</div>
-          <div class="muted">Token is stored in your browser (localStorage) on this device.</div>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <label class="label">GitHub owner</label>
-        <input id="owner" class="input" placeholder="e.g., yourname" />
-      </div>
-
-      <div class="form-row">
-        <label class="label">Repo</label>
-        <input id="repo" class="input" placeholder="e.g., turtle-scanner" />
-      </div>
-
-      <div class="form-row">
-        <label class="label">Workflow file name</label>
-        <input id="workflow" class="input" value="apply_position.yml" />
-        <div class="help muted">Must match the workflow file in .github/workflows/</div>
-      </div>
-
-      <div class="form-row">
-        <label class="label">Branch</label>
-        <input id="branch" class="input" value="main" />
-      </div>
-
-      <div class="form-row">
-        <label class="label">Personal Access Token (classic)</label>
-        <input id="token" class="input" placeholder="ghp_..." />
-        <div class="help muted">
-          Needs repo scope for private repos. For public repo, “repo” scope still works.
-        </div>
-      </div>
-
-      <div class="row">
-        <button id="btnSaveSettings" class="btn btn-primary">💾 Save Settings</button>
-        <button id="btnClearToken" class="btn btn-secondary">🧹 Clear Token</button>
-      </div>
-    </section>
-
-    <footer class="footer muted">
-      Tip: If you don’t see latest updates, hit Refresh (this page cache-busts CSV on every load).
-    </footer>
+  <div class="bar">
+    <span class="pill" id="status">Loading…</span>
+    <span class="pill hint" id="meta"></span>
+    <input id="filter" placeholder="Filter rows…" />
   </div>
 
-  <script src="./positions_app.js"></script>
+  <div id="error" style="display:none;">
+    <p class="bad"><strong>Could not load positions.csv</strong></p>
+    <p class="hint">Common reasons:</p>
+    <ul class="hint">
+      <li>The file is not in the same folder as this HTML (it should be <code>docs/positions.csv</code>).</li>
+      <li>You opened this HTML via <code>file://</code> instead of GitHub Pages (use the Pages URL).</li>
+      <li>Cache: hard refresh or wait; this page also cache-busts automatically.</li>
+    </ul>
+    <pre id="errorText"></pre>
+  </div>
+
+  <div style="overflow:auto;">
+    <table id="tbl"></table>
+  </div>
+
+<script>
+(function () {
+  const statusEl = document.getElementById('status');
+  const metaEl   = document.getElementById('meta');
+  const errBox   = document.getElementById('error');
+  const errText  = document.getElementById('errorText');
+  const tbl      = document.getElementById('tbl');
+  const filterEl = document.getElementById('filter');
+
+  // Always load CSV from same folder as this HTML: docs/positions.csv
+  // Cache-bust so you see the latest commit immediately.
+  const csvUrl = 'positions.csv?ts=' + Date.now();
+
+  function setStatus(ok, msg) {
+    statusEl.textContent = msg;
+    statusEl.className = 'pill ' + (ok ? 'ok' : 'bad');
+  }
+
+  function parseCSV(text) {
+    // Minimal CSV parser with quoted field support (handles commas inside quotes)
+    const rows = [];
+    let row = [];
+    let cur = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      const next = text[i + 1];
+
+      if (c === '"' && inQuotes && next === '"') { // escaped quote
+        cur += '"';
+        i++;
+        continue;
+      }
+
+      if (c === '"') {
+        inQuotes = !inQuotes;
+        continue;
+      }
+
+      if (!inQuotes && (c === ',' || c === '\n' || c === '\r')) {
+        if (c === '\r' && next === '\n') { /* swallow CRLF */ }
+        row.push(cur);
+        cur = '';
+        if (c === '\n') {
+          // ignore empty trailing line
+          if (row.length > 1 || (row.length === 1 && row[0].trim() !== '')) rows.push(row);
+          row = [];
+        }
+        continue;
+      }
+
+      cur += c;
+    }
+    // last field
+    if (cur.length || row.length) {
+      row.push(cur);
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  function renderTable(headers, data) {
+    const thead = document.createElement('thead');
+    const trh = document.createElement('tr');
+    headers.forEach(h => {
+      const th = document.createElement('th');
+      th.textContent = h;
+      trh.appendChild(th);
+    });
+    thead.appendChild(trh);
+
+    const tbody = document.createElement('tbody');
+    data.forEach(r => {
+      const tr = document.createElement('tr');
+      headers.forEach((_, idx) => {
+        const td = document.createElement('td');
+        td.textContent = (r[idx] ?? '').trim();
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+
+    tbl.innerHTML = '';
+    tbl.appendChild(thead);
+    tbl.appendChild(tbody);
+  }
+
+  function applyFilter() {
+    const q = filterEl.value.toLowerCase().trim();
+    const tbody = tbl.querySelector('tbody');
+    if (!tbody) return;
+    for (const tr of tbody.querySelectorAll('tr')) {
+      const txt = tr.innerText.toLowerCase();
+      tr.style.display = (!q || txt.includes(q)) ? '' : 'none';
+    }
+  }
+
+  filterEl.addEventListener('input', applyFilter);
+
+  fetch(csvUrl, { cache: 'no-store' })
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} while fetching ${csvUrl}`);
+      return res.text();
+    })
+    .then(text => {
+      const rows = parseCSV(text);
+      if (!rows.length) throw new Error('CSV loaded but contains no rows.');
+      const headers = rows[0].map(h => h.trim());
+      const data = rows.slice(1);
+
+      renderTable(headers, data);
+      applyFilter();
+
+      setStatus(true, 'Loaded');
+      metaEl.textContent = `${data.length} rows • source: docs/positions.csv`;
+    })
+    .catch(e => {
+      setStatus(false, 'Load failed');
+      errBox.style.display = 'block';
+      errText.textContent = String(e && e.stack ? e.stack : e);
+    });
+})();
+</script>
 </body>
 </html>
