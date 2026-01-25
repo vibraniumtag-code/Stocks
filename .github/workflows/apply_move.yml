@@ -1,4 +1,45 @@
-- name: Apply move to positions.csv
+name: Apply Portfolio Move
+
+on:
+  workflow_dispatch:
+    inputs:
+      move_id:
+        description: "Unique move id"
+        required: true
+        type: string
+      move_type:
+        description: "SELL | ADD | BUY | HOLD"
+        required: true
+        type: string
+      ticker:
+        description: "Ticker"
+        required: true
+        type: string
+      option_name:
+        description: "Option name"
+        required: false
+        type: string
+      sell_contracts:
+        required: false
+        type: string
+        default: "0"
+      add_contracts:
+        required: false
+        type: string
+        default: "0"
+      strategy:
+        required: false
+        type: string
+      expiry:
+        required: false
+        type: string
+      option_symbol:
+        required: false
+        type: string
+      buy_contracts:
+        required: false
+        type: string
+        default: "0"
   run: |
     python - <<'PY'
     import csv
