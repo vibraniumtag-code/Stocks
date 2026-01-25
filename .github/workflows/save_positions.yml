@@ -1,0 +1,68 @@
+name: Save positions.csv (from dashboard)
+
+on:
+  workflow_dispatch:
+    inputs:
+      positions_b64:
+        description: "Base64-encoded CSV content for positions.csv"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: save-positions
+  cancel-in-progress: false
+
+jobs:
+  save:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decode CSV and write files
+        shell: bash
+        run: |
+          set -e
+          python - <<'PY'
+          import os, base64
+          b64 = os.environ.get("POSITIONS_B64","")
+          if not b64:
+              raise SystemExit("Missing POSITIONS_B64")
+          raw = base64.b64decode(b64.encode("utf-8"))
+          text = raw.decode("utf-8")
+
+          # Write root positions.csv
+          with open("positions.csv","w",encoding="utf-8",newline="") as f:
+              f.write(text)
+
+          # Also copy to docs for Pages
+          os.makedirs("docs", exist_ok=True)
+          with open("docs/positions.csv","w",encoding="utf-8",newline="") as f:
+              f.write(text)
+
+          print("Wrote positions.csv and docs/positions.csv")
+          PY
+        env:
+          POSITIONS_B64: ${{ inputs.positions_b64 }}
+
+      - name: Commit & push
+        shell: bash
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add positions.csv docs/positions.csv
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update positions.csv from dashboard [auto]"
+          git push
