@@ -4,54 +4,65 @@ on:
   workflow_dispatch:
     inputs:
       move_id:
-        description: "Unique ID for this move (for logging)"
+        description: "Unique ID for this move (optional)"
         required: false
         type: string
+
       move_type:
         description: "SELL | ADD | BUY"
         required: true
         type: string
+
       ticker:
         description: "Ticker (e.g., NFLX)"
         required: true
         type: string
+
       option_name:
-        description: "Option name exactly as in positions.csv (e.g., NFLX 2026-02-20 P 88)"
-        required: true
+        description: "Option name (required for SELL/ADD; optional for BUY if building from option_symbol)"
+        required: false
         type: string
+
       sell_contracts:
-        description: "Contracts to sell (for SELL)"
+        description: "Contracts to sell (SELL)"
         required: false
         default: "0"
         type: string
+
       add_contracts:
-        description: "Contracts to add (for ADD pyramiding)"
+        description: "Contracts to add (ADD)"
         required: false
         default: "0"
         type: string
+
       buy_contracts:
-        description: "Contracts to buy (for BUY new entry)"
+        description: "Contracts to buy (BUY)"
         required: false
         default: "0"
         type: string
+
       strategy:
-        description: "Optional: Strategy label"
+        description: "BUY_CALL / BUY_PUT (optional, used to build option_name for BUY)"
         required: false
         type: string
+
       expiry:
-        description: "Optional: Expiry"
+        description: "YYYY-MM-DD (optional, used to build option_name for BUY)"
         required: false
         type: string
+
       option_symbol:
-        description: "Optional: OCC option symbol"
+        description: "OCC option symbol (optional, used to build option_name for BUY)"
         required: false
         type: string
+
       option_entry_price:
         description: "REQUIRED for BUY: option fill price per contract (e.g., 2.30)"
         required: false
         type: string
+
       underlying_entry_price:
-        description: "REQUIRED for BUY: underlying fill/spot price at execution (e.g., 135.12)"
+        description: "REQUIRED for BUY: underlying price at execution (e.g., 135.12)"
         required: false
         type: string
 
@@ -65,7 +76,6 @@ concurrency:
 jobs:
   apply:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -83,12 +93,15 @@ jobs:
           MOVE_TYPE: ${{ github.event.inputs.move_type }}
           TICKER: ${{ github.event.inputs.ticker }}
           OPTION_NAME: ${{ github.event.inputs.option_name }}
+
           SELL_CONTRACTS: ${{ github.event.inputs.sell_contracts }}
           ADD_CONTRACTS: ${{ github.event.inputs.add_contracts }}
           BUY_CONTRACTS: ${{ github.event.inputs.buy_contracts }}
+
           STRATEGY: ${{ github.event.inputs.strategy }}
           EXPIRY: ${{ github.event.inputs.expiry }}
           OPTION_SYMBOL: ${{ github.event.inputs.option_symbol }}
+
           OPTION_ENTRY_PRICE: ${{ github.event.inputs.option_entry_price }}
           UNDERLYING_ENTRY_PRICE: ${{ github.event.inputs.underlying_entry_price }}
         run: |
@@ -104,126 +117,160 @@ jobs:
           ticker = (os.getenv("TICKER","") or "").strip().upper()
           option_name = (os.getenv("OPTION_NAME","") or "").strip()
 
+          strategy = (os.getenv("STRATEGY","") or "").strip().upper()
+          expiry = (os.getenv("EXPIRY","") or "").strip()
+          option_symbol = (os.getenv("OPTION_SYMBOL","") or "").strip()
+
           def to_int_env(name, default="0"):
-            s = (os.getenv(name, default) or default).strip()
-            if s == "":
-              s = default
-            return int(float(s))
+              s = (os.getenv(name, default) or default).strip()
+              if s == "":
+                  s = default
+              return int(float(s))
 
           sell_n = to_int_env("SELL_CONTRACTS","0")
           add_n  = to_int_env("ADD_CONTRACTS","0")
           buy_n  = to_int_env("BUY_CONTRACTS","0")
 
           def ffloat(s):
-            try:
-              v = float((s or "").strip())
-              return v if v > 0 else None
-            except:
-              return None
+              try:
+                  v = float((s or "").strip())
+                  return v if v > 0 else None
+              except:
+                  return None
 
           opt_entry_v = ffloat(os.getenv("OPTION_ENTRY_PRICE",""))
           und_entry_v = ffloat(os.getenv("UNDERLYING_ENTRY_PRICE",""))
 
-          if not os.path.exists(POS_FILE):
-            raise SystemExit(f"{POS_FILE} not found")
+          def today():
+              return datetime.utcnow().strftime("%Y-%m-%d")
 
-          # Load existing positions
+          def parse_strike_from_occ(occ: str) -> float:
+              # OCC last 8 digits are strike * 1000
+              digits = occ[-8:]
+              return int(digits) / 1000.0
+
+          # If BUY and option_name is blank, build from strategy+expiry+option_symbol
+          if move_type == "BUY" and not option_name:
+              # strategy like BUY_CALL / BUY_PUT -> C/P
+              cp = "C" if "CALL" in strategy else ("P" if "PUT" in strategy else "")
+              if not (ticker and expiry and cp and option_symbol):
+                  raise SystemExit("BUY requires option_name OR (strategy + expiry + option_symbol) to build it")
+              try:
+                  strike = parse_strike_from_occ(option_symbol)
+              except Exception:
+                  raise SystemExit("Could not parse strike from option_symbol to build option_name")
+              # e.g. XOM 2026-03-20 C 135
+              # strike formatting: keep up to 3 decimals if needed, trim zeros
+              strike_s = f"{strike:.3f}".rstrip("0").rstrip(".")
+              option_name = f"{ticker} {expiry} {cp} {strike_s}"
+
+          if not os.path.exists(POS_FILE):
+              raise SystemExit(f"{POS_FILE} not found")
+
+          # Load existing
           with open(POS_FILE, newline="", encoding="utf-8") as f:
-            r = csv.DictReader(f)
-            existing = list(r)
+              r = csv.DictReader(f)
+              existing = list(r)
 
           # Force schema/order
           fieldnames = ["ticker","option_name","option_entry_price","entry_date","underlying_entry_price","contracts"]
 
           def norm_row(row):
-            return {k: (row.get(k, "") if row else "") for k in fieldnames}
+              return {k: (row.get(k, "") if row else "") for k in fieldnames}
 
           rows = [norm_row(x) for x in existing]
 
-          def today():
-            return datetime.utcnow().strftime("%Y-%m-%d")
-
           def row_contracts(row):
-            try:
-              return int(float((row.get("contracts","0") or "0").strip() or "0"))
-            except:
-              return 0
+              try:
+                  return int(float((row.get("contracts","0") or "0").strip() or "0"))
+              except:
+                  return 0
+
+          def find_row():
+              for row in rows:
+                  if row["ticker"].strip().upper() == ticker and row["option_name"].strip() == option_name:
+                      return row
+              return None
 
           changed = False
 
+          # Validate requirements
           if move_type in ("SELL","ADD"):
-            found = False
-            for row in rows:
-              if row["ticker"].strip().upper() == ticker and row["option_name"].strip() == option_name:
-                found = True
-                cur = row_contracts(row)
-                if move_type == "SELL":
-                  if sell_n <= 0:
-                    raise SystemExit("SELL requires sell_contracts > 0")
+              if not option_name:
+                  raise SystemExit(f"{move_type} requires option_name")
+              if move_type == "SELL" and sell_n <= 0:
+                  raise SystemExit("SELL requires sell_contracts > 0")
+              if move_type == "ADD" and add_n <= 0:
+                  raise SystemExit("ADD requires add_contracts > 0")
+
+              row = find_row()
+              if row is None:
+                  raise SystemExit(f"Could not find position to {move_type}: {ticker} | {option_name}")
+
+              cur = row_contracts(row)
+              if move_type == "SELL":
                   newc = max(cur - sell_n, 0)
-                  if newc != cur:
-                    row["contracts"] = str(newc)
-                    changed = True
-                else:
-                  if add_n <= 0:
-                    raise SystemExit("ADD requires add_contracts > 0")
+              else:
                   newc = cur + add_n
-                  if newc != cur:
-                    row["contracts"] = str(newc)
-                    changed = True
-                break
-            if not found:
-              raise SystemExit(f"Could not find position to {move_type}: {ticker} | {option_name}")
+
+              if newc != cur:
+                  row["contracts"] = str(newc)
+                  changed = True
 
           elif move_type == "BUY":
-            if buy_n <= 0:
-              raise SystemExit("BUY requires buy_contracts > 0")
-            if not option_name:
-              raise SystemExit("BUY requires option_name")
-            if opt_entry_v is None or und_entry_v is None:
-              raise SystemExit("BUY requires option_entry_price and underlying_entry_price (both > 0)")
+              if buy_n <= 0:
+                  raise SystemExit("BUY requires buy_contracts > 0")
+              if not option_name:
+                  raise SystemExit("BUY requires option_name (directly or built)")
+              if opt_entry_v is None or und_entry_v is None:
+                  raise SystemExit("BUY requires option_entry_price and underlying_entry_price (both > 0)")
 
-            # If already exists, increase contracts (do NOT overwrite entry fields)
-            for row in rows:
-              if row["ticker"].strip().upper() == ticker and row["option_name"].strip() == option_name:
-                cur = row_contracts(row)
-                row["contracts"] = str(cur + buy_n)
-                changed = True
-                break
-            else:
-              rows.append({
-                "ticker": ticker,
-                "option_name": option_name,
-                "option_entry_price": f"{opt_entry_v:.4f}",
-                "entry_date": today(),
-                "underlying_entry_price": f"{und_entry_v:.2f}",
-                "contracts": str(buy_n),
-              })
-              changed = True
+              row = find_row()
+              if row is not None:
+                  # Increase contracts only; keep original entry fields
+                  cur = row_contracts(row)
+                  row["contracts"] = str(cur + buy_n)
+                  changed = True
+              else:
+                  rows.append({
+                      "ticker": ticker,
+                      "option_name": option_name,
+                      "option_entry_price": f"{opt_entry_v:.4f}",
+                      "entry_date": today(),
+                      "underlying_entry_price": f"{und_entry_v:.2f}",
+                      "contracts": str(buy_n),
+                  })
+                  changed = True
 
           else:
-            raise SystemExit(f"Unknown move_type={move_type}")
+              raise SystemExit(f"Unknown move_type={move_type}")
 
           # Write positions.csv
           if changed:
-            tmp = POS_FILE + ".tmp"
-            with open(tmp, "w", newline="", encoding="utf-8") as f:
-              w = csv.DictWriter(f, fieldnames=fieldnames)
-              w.writeheader()
-              w.writerows(rows)
-            os.replace(tmp, POS_FILE)
-            print("positions.csv updated")
+              tmp = POS_FILE + ".tmp"
+              with open(tmp, "w", newline="", encoding="utf-8") as f:
+                  w = csv.DictWriter(f, fieldnames=fieldnames)
+                  w.writeheader()
+                  w.writerows(rows)
+              os.replace(tmp, POS_FILE)
+              print("positions.csv updated")
           else:
-            print("No changes needed")
+              print("No changes needed")
 
-          # Append ledger (optional but useful)
+          # Ledger append (helpful for debugging)
           led_exists = os.path.exists(LEDGER)
           with open(LEDGER, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            if not led_exists:
-              w.writerow(["ts_utc","move_id","move_type","ticker","option_name","sell_contracts","add_contracts","buy_contracts","option_entry_price","underlying_entry_price"])
-            w.writerow([datetime.utcnow().isoformat()+"Z", move_id, move_type, ticker, option_name, sell_n, add_n, buy_n,
-                        f"{opt_entry_v:.4f}" if opt_entry_v else "", f"{und_entry_v:.2f}" if und_entry_v else ""])
+              w = csv.writer(f)
+              if not led_exists:
+                  w.writerow(["ts_utc","move_id","move_type","ticker","option_name","sell_contracts","add_contracts","buy_contracts","option_entry_price","underlying_entry_price"])
+              w.writerow([
+                  datetime.utcnow().isoformat()+"Z",
+                  move_id, move_type, ticker, option_name,
+                  sell_n, add_n, buy_n,
+                  f"{opt_entry_v:.4f}" if opt_entry_v else "",
+                  f"{und_entry_v:.2f}" if und_entry_v else "",
+              ])
+
           PY
 
       - name: Commit & push (only if changed)
