@@ -1,2 +1,3 @@
 ts_utc,move_type,ticker,option_name,sell_contracts,add_contracts,buy_contracts,strategy,expiry,option_symbol
 2026-01-25T05:10:03.335318Z,BUY,KO,,0,0,6,BUY_CALL,2026-03-20,KO260320C00072500
+2026-01-25T05:31:00.429084Z,BUY,KO,KO 2026-03-20 C 72.5,0,0,6,BUY_CALL,2026-03-20,KO260320C00072500,4-BUY-KO-KO260320C00072500
