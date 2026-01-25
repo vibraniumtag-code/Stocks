@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 """
-exit_check.py
+exit_check.py  (UPDATED: TURTLE-STYLE PRETTY HTML EMAIL)
 
-Now emails a clean HTML table (with a plain-text fallback).
+Changes vs your version:
+- ✅ Turtle-style email shell (dark header + summary cards + scroll table)
+- ✅ Email-safe HTML (inline styles; minimal <style> usage)
+- ✅ HTML-ONLY email (prevents clients from choosing text/plain)
+- ✅ Keeps your existing logic and the plain-text fallback for stdout (when SMTP not set)
+- ✅ Still respects EMAIL_MODE=exits_only
+
+Env:
+  ATR_VERY_CLOSE, ATR_CLOSE, APPLY_RECOMMENDATIONS, RECO_MODE
+  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO, EMAIL_MODE
+  HISTORY_PERIOD
 """
 
 import os
+import re
 import smtplib
 import ssl
 from datetime import datetime, timezone
-from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
 from typing import Optional, Tuple, List, Dict
 
 import pandas as pd
@@ -47,11 +58,13 @@ HISTORY_PERIOD = os.getenv("HISTORY_PERIOD", "9mo").strip()
 # =========================
 # HELPERS
 # =========================
+def html_escape(s) -> str:
+    return ("" if s is None else str(s)).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
-
 
 def infer_direction(option_name: str) -> Tuple[Optional[bool], str]:
     name = f" {option_name} "
@@ -60,7 +73,6 @@ def infer_direction(option_name: str) -> Tuple[Optional[bool], str]:
     if " P " in name:
         return False, "PUT"
     return None, "UNKNOWN"
-
 
 def to_float(x) -> Optional[float]:
     try:
@@ -71,7 +83,6 @@ def to_float(x) -> Optional[float]:
     except Exception:
         return None
 
-
 def to_int(x, default: int = 0) -> int:
     try:
         v = int(float(x))
@@ -79,22 +90,20 @@ def to_int(x, default: int = 0) -> int:
     except Exception:
         return default
 
-
 def smtp_ready() -> bool:
     return all([SMTP_HOST, SMTP_PORT > 0, SMTP_USER, SMTP_PASS, EMAIL_TO])
 
-
-def send_email(subject: str, html_body: str, text_body: str) -> None:
+def send_pretty_email(subject: str, html_body: str) -> None:
     """
-    Sends a multipart email with both HTML + plain text.
+    HTML-ONLY email to prevent clients from preferring text/plain.
     """
-    msg = MIMEMultipart("alternative")
+    msg = MIMEText(html_body, "html", "utf-8")
     msg["Subject"] = subject
     msg["To"] = EMAIL_TO
-    msg["From"] = f"Scanner <{SMTP_USER}>"
-
-    msg.attach(MIMEText(text_body, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    msg["From"] = f"Exit Check <{SMTP_USER}>"
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
+    msg.replace_header("Content-Type", 'text/html; charset="utf-8"')
 
     if SMTP_PORT == 465:
         ctx = ssl.create_default_context()
@@ -102,19 +111,18 @@ def send_email(subject: str, html_body: str, text_body: str) -> None:
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
     else:
+        ctx = ssl.create_default_context()
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.ehlo()
-            server.starttls()
+            server.starttls(context=ctx)
             server.ehlo()
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
-
 
 def calculate_atr(df: pd.DataFrame, period: int) -> pd.Series:
     high = df["High"]
     low = df["Low"]
     close = df["Close"]
-
     tr = pd.concat(
         [
             high - low,
@@ -123,9 +131,7 @@ def calculate_atr(df: pd.DataFrame, period: int) -> pd.Series:
         ],
         axis=1,
     ).max(axis=1)
-
     return tr.rolling(period).mean()
-
 
 def remove_today_partial_bar(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
@@ -139,16 +145,13 @@ def remove_today_partial_bar(df: pd.DataFrame) -> pd.DataFrame:
         pass
     return df
 
-
 def prior_window(df_completed: pd.DataFrame, n: int) -> pd.DataFrame:
     return df_completed.iloc[-(n + 1):-1]
-
 
 def action_and_trend(structure_broken: bool) -> Tuple[str, str]:
     trend = "BROKEN" if structure_broken else "INTACT"
     action = "SELL" if structure_broken else "HOLD"
     return action, trend
-
 
 def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
     t = yf.Ticker(ticker)
@@ -180,7 +183,6 @@ def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
 
     return float(fallback), "fallback_daily_close"
 
-
 def atr_advice(is_call: bool, price: float, atr_stop: float, atr: float) -> Tuple[str, float, float, bool]:
     if atr <= 0:
         return "ATR unavailable", 0.0, 0.0, False
@@ -202,18 +204,14 @@ def atr_advice(is_call: bool, price: float, atr_stop: float, atr: float) -> Tupl
         return f"CLOSE (≤ {ATR_CLOSE:.2f} ATR)", dist, dist_atr, False
     return "OK", dist, dist_atr, False
 
-
 def decide_sell_count(contracts: int, broken10: bool, broken5: bool) -> int:
     if contracts <= 0:
         return 0
     if broken10:
         return contracts
     if broken5:
-        if contracts >= 3:
-            return 2
-        return 1
+        return 2 if contracts >= 3 else 1
     return 0
-
 
 def label_action(sell_count: int, contracts: int) -> str:
     if contracts <= 0:
@@ -225,281 +223,246 @@ def label_action(sell_count: int, contracts: int) -> str:
     return f"SELL_{sell_count}"
 
 
+# =========================
+# PRETTY BADGES (INLINE)
+# =========================
+def pill(text: str, kind: str = "neutral") -> str:
+    t = (text or "").strip()
+    if t == "":
+        return ""
+    styles = {
+        "good":   "background:#ecfdf5;color:#065f46;border:1px solid #d1fae5;",
+        "warn":   "background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;",
+        "bad":    "background:#fef2f2;color:#991b1b;border:1px solid #fecaca;",
+        "info":   "background:#eef2ff;color:#3730a3;border:1px solid #e0e7ff;",
+        "neutral":"background:#f3f4f6;color:#374151;border:1px solid #e5e7eb;",
+    }
+    st = styles.get(kind, styles["neutral"])
+    return f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;font-weight:800;font-size:11px;{st}white-space:nowrap;'>{html_escape(t)}</span>"
+
 def reco_badge_html(reco: str) -> str:
-    """
-    Returns an HTML <span> with a colored pill.
-    """
     r = (reco or "").upper()
     if r == "HOLD":
-        return '<span class="pill pill-hold">HOLD</span>'
+        return pill("HOLD", "good")
+    if r == "SELL_ALL":
+        return pill("SELL_ALL", "bad")
     if r.startswith("SELL"):
-        # sell all stronger than partial
-        if r == "SELL_ALL":
-            return '<span class="pill pill-sellall">SELL_ALL</span>'
-        return f'<span class="pill pill-sell">{r}</span>'
-    return f'<span class="pill">{r}</span>'
-
+        return pill(r, "warn")
+    return pill(r, "neutral")
 
 def advice_badge_html(advice: str) -> str:
     a = (advice or "").upper()
     if "STOP HIT" in a:
-        return '<span class="pill pill-sellall">STOP HIT</span>'
+        return pill("STOP HIT", "bad")
     if "VERY CLOSE" in a:
-        return '<span class="pill pill-sell">VERY CLOSE</span>'
+        return pill("VERY CLOSE", "warn")
     if a.startswith("CLOSE"):
-        return '<span class="pill pill-warn">CLOSE</span>'
+        return pill("CLOSE", "warn")
     if a.startswith("OK"):
-        return '<span class="pill pill-hold">OK</span>'
-    return f'<span class="pill">{advice}</span>'
+        return pill("OK", "good")
+    return pill(advice, "neutral")
 
 
-def build_html(rows: List[Dict], any_action: bool, reco_mode: str) -> str:
+# =========================
+# PRETTY HTML EMAIL (TURTLE STYLE)
+# =========================
+def build_pretty_html(rows: List[Dict], any_action: bool, reco_mode: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    total = len(rows)
-    action_count = sum(1 for r in rows if (r.get("recommendation") or "").upper() != "HOLD")
+    date_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Sort: action rows first, then by ticker
+    total = len(rows)
+    action_rows = sum(1 for r in rows if (r.get("recommendation") or "").upper() != "HOLD")
+    hold_rows = total - action_rows
+
+    # Preheader controls inbox preview text
+    preheader = html_escape(f"Exit Check · {date_str} · {action_rows} action rows, {hold_rows} holds.")
+
+    # Sort: action first, then ticker
     def sort_key(r: Dict):
         reco = (r.get("recommendation") or "").upper()
         return (0 if reco != "HOLD" else 1, str(r.get("ticker") or ""))
 
     rows_sorted = sorted(rows, key=sort_key)
 
-    table_rows_html = []
-    for r in rows_sorted:
-        table_rows_html.append(f"""
-          <tr>
-            <td class="mono">{r.get("ticker","")}</td>
-            <td>{r.get("direction","")}</td>
-            <td class="wrap">{r.get("option_name","")}</td>
-            <td class="num">{r.get("contracts","")}</td>
+    # Build table rows
+    numeric_right = {"contracts", "close_price", "current_price", "atr", "atr_stop"}
+    zebra_a = "#ffffff"
+    zebra_b = "#fcfcfd"
 
-            <td class="num">{r.get("close_price","")}</td>
-            <td class="num">{r.get("current_price","")}</td>
-            <td class="muted wrap">{r.get("current_src","")}</td>
+    tr_html = []
+    for i, r in enumerate(rows_sorted):
+        bg = zebra_a if (i % 2 == 0) else zebra_b
 
-            <td class="num">{r.get("atr","")}</td>
-            <td class="num">{r.get("atr_stop","")}</td>
+        def td(key: str, align: str = "left", mono: bool = False, nowrap: bool = True) -> str:
+            style = f"padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;text-align:{align};"
+            style += "font-variant-numeric:tabular-nums;" if align == "right" else ""
+            style += "white-space:nowrap;" if nowrap else ""
+            style += f"background:{bg};"
+            if mono:
+                style += "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;"
+            return f"<td style='{style}'>{html_escape(r.get(key,''))}</td>"
 
-            <td>{advice_badge_html(r.get("atr_adv_close",""))}<div class="muted small mono">{r.get("atr_dist_close","")}</div></td>
-            <td>{advice_badge_html(r.get("atr_adv_cur",""))}<div class="muted small mono">{r.get("atr_dist_cur","")}</div></td>
+        # special cells
+        reco_cell = f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;text-align:center;white-space:nowrap;background:{bg};'>{reco_badge_html(r.get('recommendation',''))}</td>"
+        advice_close_cell = (
+            f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;white-space:nowrap;background:{bg};'>"
+            f"{advice_badge_html(r.get('atr_adv_close',''))}"
+            f"<div style='margin-top:4px;font-size:11px;color:#6b7280;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;'>"
+            f"{html_escape(r.get('atr_dist_close',''))}</div></td>"
+        )
+        advice_cur_cell = (
+            f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;white-space:nowrap;background:{bg};'>"
+            f"{advice_badge_html(r.get('atr_adv_cur',''))}"
+            f"<div style='margin-top:4px;font-size:11px;color:#6b7280;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;'>"
+            f"{html_escape(r.get('atr_dist_cur',''))}</div></td>"
+        )
 
-            <td class="center">
-              <div class="small"><b>10d</b> {r.get("trend10_close","")} · {r.get("action10_close","")}</div>
-              <div class="small"><b>5d</b> {r.get("trend5_close","")} · {r.get("action5_close","")}</div>
-            </td>
+        close_struct = (
+            f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;text-align:center;white-space:nowrap;background:{bg};'>"
+            f"<div style='font-size:11px;'><b>10d</b> {html_escape(r.get('trend10_close',''))} · {html_escape(r.get('action10_close',''))}</div>"
+            f"<div style='font-size:11px;'><b>5d</b> {html_escape(r.get('trend5_close',''))} · {html_escape(r.get('action5_close',''))}</div>"
+            f"</td>"
+        )
+        cur_struct = (
+            f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;text-align:center;white-space:nowrap;background:{bg};'>"
+            f"<div style='font-size:11px;'><b>10d</b> {html_escape(r.get('trend10_current',''))} · {html_escape(r.get('action10_current',''))}</div>"
+            f"<div style='font-size:11px;'><b>5d</b> {html_escape(r.get('trend5_current',''))} · {html_escape(r.get('action5_current',''))}</div>"
+            f"</td>"
+        )
 
-            <td class="center">
-              <div class="small"><b>10d</b> {r.get("trend10_current","")} · {r.get("action10_current","")}</div>
-              <div class="small"><b>5d</b> {r.get("trend5_current","")} · {r.get("action5_current","")}</div>
-            </td>
+        tr_html.append(
+            "<tr>"
+            + td("ticker", align="left", mono=True)
+            + td("direction", align="center")
+            + f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;white-space:nowrap;background:{bg};'>{html_escape(r.get('option_name',''))}</td>"
+            + td("contracts", align="right")
+            + td("close_price", align="right")
+            + td("current_price", align="right")
+            + f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;color:#6b7280;white-space:nowrap;background:{bg};'>{html_escape(r.get('current_src',''))}</td>"
+            + td("atr", align="right")
+            + td("atr_stop", align="right")
+            + advice_close_cell
+            + advice_cur_cell
+            + close_struct
+            + cur_struct
+            + f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;text-align:center;white-space:nowrap;background:{bg};'>{html_escape(r.get('reco_basis',''))}</td>"
+            + reco_cell
+            + "</tr>"
+        )
 
-            <td class="center">{r.get("reco_basis","")}</td>
-            <td class="center">{reco_badge_html(r.get("recommendation",""))}</td>
-          </tr>
-        """)
+    # Empty state
+    if not tr_html:
+        tr_html = ["<tr><td colspan='15' style='padding:12px;font-size:13px;'>No valid positions found.</td></tr>"]
 
-    headline_class = "banner banner-warn" if any_action else "banner banner-ok"
-    headline_text = "ACTION NEEDED" if any_action else "NO ACTION (HOLD)"
+    # summary cards
+    headline = "🚨 ACTION NEEDED" if any_action else "✅ NO ACTION (HOLD)"
+    headline_bar = (
+        "background:#fff7ed;color:#9a3412;border-bottom:1px solid #fed7aa;"
+        if any_action else
+        "background:#ecfdf5;color:#065f46;border-bottom:1px solid #d1fae5;"
+    )
 
-    html = f"""
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Exit Check</title>
-    <style>
-      body {{
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-        background: #f6f8fb;
-        margin: 0;
-        padding: 24px;
-        color: #111827;
-      }}
-      .card {{
-        max-width: 1200px;
-        margin: 0 auto;
-        background: #ffffff;
-        border-radius: 12px;
-        box-shadow: 0 6px 18px rgba(17,24,39,0.08);
-        overflow: hidden;
-        border: 1px solid #e5e7eb;
-      }}
-      .header {{
-        padding: 18px 20px;
-        border-bottom: 1px solid #e5e7eb;
-        background: #ffffff;
-      }}
-      .title {{
-        font-size: 16px;
-        font-weight: 700;
-        margin: 0 0 6px 0;
-      }}
-      .meta {{
-        font-size: 12px;
-        color: #6b7280;
-        margin: 0;
-      }}
-      .banner {{
-        padding: 10px 20px;
-        font-weight: 700;
-        font-size: 13px;
-      }}
-      .banner-ok {{
-        background: #ecfdf5;
-        color: #065f46;
-        border-bottom: 1px solid #d1fae5;
-      }}
-      .banner-warn {{
-        background: #fff7ed;
-        color: #9a3412;
-        border-bottom: 1px solid #fed7aa;
-      }}
-      table {{
-        width: 100%;
-        border-collapse: collapse;
-      }}
-      thead th {{
-        position: sticky;
-        top: 0;
-        background: #f9fafb;
-        border-bottom: 1px solid #e5e7eb;
-        padding: 10px 10px;
-        font-size: 12px;
-        text-align: left;
-        color: #374151;
-        white-space: nowrap;
-      }}
-      tbody td {{
-        border-bottom: 1px solid #f1f5f9;
-        padding: 10px 10px;
-        font-size: 12px;
-        vertical-align: top;
-      }}
-      tbody tr:hover {{
-        background: #f9fafb;
-      }}
-      .num {{
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-      }}
-      .center {{
-        text-align: center;
-      }}
-      .mono {{
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      }}
-      .muted {{
-        color: #6b7280;
-      }}
-      .small {{
-        font-size: 11px;
-        line-height: 1.2;
-      }}
-      .wrap {{
-        word-break: break-word;
-        max-width: 260px;
-      }}
-      .pill {{
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 999px;
-        font-weight: 700;
-        font-size: 11px;
-        border: 1px solid #e5e7eb;
-        background: #f9fafb;
-        color: #374151;
-      }}
-      .pill-hold {{
-        background: #ecfdf5;
-        border-color: #d1fae5;
-        color: #065f46;
-      }}
-      .pill-warn {{
-        background: #fffbeb;
-        border-color: #fde68a;
-        color: #92400e;
-      }}
-      .pill-sell {{
-        background: #fff7ed;
-        border-color: #fed7aa;
-        color: #9a3412;
-      }}
-      .pill-sellall {{
-        background: #fef2f2;
-        border-color: #fecaca;
-        color: #991b1b;
-      }}
-      .footer {{
-        padding: 14px 20px;
-        font-size: 11px;
-        color: #6b7280;
-        background: #ffffff;
-      }}
-      @media (max-width: 900px) {{
-        body {{ padding: 12px; }}
-        thead th, tbody td {{ padding: 8px 8px; }}
-        .wrap {{ max-width: 180px; }}
-      }}
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <div class="header">
-        <p class="title">Exit Check Report</p>
-        <p class="meta">
-          Timestamp: <span class="mono">{ts}</span> ·
-          Reco mode: <b>{reco_mode.upper()}</b> ·
-          Positions: <b>{total}</b> ·
-          Action rows: <b>{action_count}</b>
-        </p>
+    cards = f"""
+      <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:12px 0;margin:0 0 12px 0;">
+        <tr>
+          <td style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px;">
+            <div style="font-size:12px;color:#6b7280;font-weight:700;">Positions</div>
+            <div style="font-size:18px;font-weight:900;color:#111827;margin-top:2px;">{total}</div>
+          </td>
+          <td style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:12px;">
+            <div style="font-size:12px;color:#9a3412;font-weight:700;">Action rows</div>
+            <div style="font-size:18px;font-weight:900;color:#9a3412;margin-top:2px;">{action_rows}</div>
+          </td>
+          <td style="background:#ecfdf5;border:1px solid #d1fae5;border-radius:12px;padding:12px;">
+            <div style="font-size:12px;color:#065f46;font-weight:700;">HOLD rows</div>
+            <div style="font-size:18px;font-weight:900;color:#065f46;margin-top:2px;">{hold_rows}</div>
+          </td>
+        </tr>
+      </table>
+    """
+
+    return f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f6f7fb;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+    {preheader}
+  </div>
+
+  <div style="width:100%;padding:24px 12px;background:#f6f7fb;">
+    <div style="max-width:1200px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
+
+      <!-- Header -->
+      <div style="background:#0b1220;color:#ffffff;padding:18px 22px;">
+        <div style="font-size:18px;font-weight:900;line-height:1.25;">🧯 Exit Check — Report</div>
+        <div style="font-size:12px;opacity:.9;margin-top:6px;">{html_escape(ts)} · RECO_MODE <b>{html_escape(reco_mode.upper())}</b></div>
       </div>
 
-      <div class="{headline_class}">{headline_text}</div>
-
-      <div style="overflow:auto;">
-        <table>
-          <thead>
-            <tr>
-              <th>Ticker</th>
-              <th>Dir</th>
-              <th>Option</th>
-              <th class="num">Contracts</th>
-
-              <th class="num">Close</th>
-              <th class="num">Current</th>
-              <th>Current Src</th>
-
-              <th class="num">ATR</th>
-              <th class="num">ATR Stop</th>
-
-              <th>ATR Advice (Close)</th>
-              <th>ATR Advice (Current)</th>
-
-              <th class="center">Close Structure</th>
-              <th class="center">Current Structure</th>
-
-              <th class="center">Reco Basis</th>
-              <th class="center">Recommendation</th>
-            </tr>
-          </thead>
-          <tbody>
-            {''.join(table_rows_html) if table_rows_html else '<tr><td colspan="15">No valid positions found.</td></tr>'}
-          </tbody>
-        </table>
+      <!-- Banner -->
+      <div style="padding:10px 22px;font-weight:900;font-size:13px;{headline_bar}">
+        {headline}
       </div>
 
-      <div class="footer">
-        Structure levels + ATR computed from completed daily bars only (today’s partial bar excluded).
-        Optional paper execution: APPLY_RECOMMENDATIONS={str(APPLY_RECOMMENDATIONS).lower()}.
+      <!-- Content -->
+      <div style="padding:18px 22px;">
+        {cards}
+
+        <!-- Table -->
+        <div style="margin:0 0 16px 0;">
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">📋 Positions</div>
+          <div style="border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+            <div style="overflow:auto;">
+              <table style="width:100%;border-collapse:collapse;">
+                <thead>
+                  <tr>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Ticker</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Dir</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Option</th>
+                    <th style="text-align:right;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Contracts</th>
+
+                    <th style="text-align:right;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Close</th>
+                    <th style="text-align:right;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Current</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Current Src</th>
+
+                    <th style="text-align:right;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">ATR</th>
+                    <th style="text-align:right;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">ATR Stop</th>
+
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">ATR Advice (Close)</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">ATR Advice (Current)</th>
+
+                    <th style="text-align:center;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Close Structure</th>
+                    <th style="text-align:center;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Current Structure</th>
+
+                    <th style="text-align:center;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Reco Basis</th>
+                    <th style="text-align:center;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;">Recommendation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {''.join(tr_html)}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div style="margin-top:8px;font-size:12px;color:#6b7280;">Tip: table scrolls horizontally on mobile.</div>
+        </div>
+
+        <!-- Notes -->
+        <div style="padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px;background:#fbfbfd;font-size:12px;color:#6b7280;">
+          Structure levels + ATR computed from completed daily bars only (today’s partial bar excluded).<br/>
+          APPLY_RECOMMENDATIONS=<b>{str(APPLY_RECOMMENDATIONS).lower()}</b>
+        </div>
+
+      </div>
+
+      <!-- Footer -->
+      <div style="padding:14px 22px;background:#fbfbfd;border-top:1px solid #eef0f6;font-size:12px;color:#6b7280;">
+        Generated by exit_check.py · {html_escape(date_str)}
       </div>
     </div>
-  </body>
+  </div>
+</body>
 </html>
 """
-    return html
-
 
 def build_text_fallback(rows: List[Dict], any_action: bool, reco_mode: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -508,8 +471,10 @@ def build_text_fallback(rows: List[Dict], any_action: bool, reco_mode: str) -> s
     lines.append("ACTION NEEDED" if any_action else "NO ACTION (HOLD)")
     lines.append("")
 
-    # Action rows first
-    rows_sorted = sorted(rows, key=lambda r: (0 if (r.get("recommendation","").upper() != "HOLD") else 1, r.get("ticker","")))
+    rows_sorted = sorted(
+        rows,
+        key=lambda r: (0 if (r.get("recommendation", "").upper() != "HOLD") else 1, r.get("ticker", "")),
+    )
     for r in rows_sorted:
         lines.append(f"{r.get('ticker','')} ({r.get('direction','')}) | {r.get('option_name','')}")
         lines.append(f"  Contracts: {r.get('contracts','')} | Close: {r.get('close_price','')} | Current: {r.get('current_price','')} ({r.get('current_src','')})")
@@ -552,7 +517,6 @@ def main():
 
         is_call, direction = infer_direction(option_name)
 
-        # Default "skipped" row (optional: you can omit skipped rows entirely)
         if not ticker or entry_underlying is None or is_call is None:
             continue
         if contracts <= 0:
@@ -585,7 +549,6 @@ def main():
         low10, high10 = float(w10["Low"].min()), float(w10["High"].max())
         low5, high5 = float(w5["Low"].min()), float(w5["High"].max())
 
-        # ATR stop (from underlying entry)
         if is_call:
             atr_stop = float(entry_underlying - ATR_MULTIPLIER * atr)
             broken10_close = bool(close_price < low10)
@@ -623,7 +586,6 @@ def main():
             new_contracts = max(contracts - sell_count, 0)
             updated_positions.at[idx, "contracts"] = new_contracts
 
-        # Store a row for the HTML table
         rows.append({
             "ticker": ticker,
             "direction": direction,
@@ -650,17 +612,21 @@ def main():
             "recommendation": recommendation,
         })
 
-    subject = "🚨 ACTION NEEDED – Recommendations" if any_action else "✅ No Action – Hold"
+    # subject with counts
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    action_rows = sum(1 for r in rows if (r.get("recommendation") or "").upper() != "HOLD")
+    if any_action:
+        subject = f"🚨 Exit Check — {date_str} ({action_rows} action)"
+    else:
+        subject = f"✅ Exit Check — {date_str} (no action)"
 
     if APPLY_RECOMMENDATIONS and not updated_positions.equals(positions):
         updated_positions.to_csv(CSV_FILE, index=False)
 
-    # If exits_only and no action, do nothing (as before)
     if EMAIL_MODE == "exits_only" and not any_action:
         return
 
-    # Build email bodies
-    html_body = build_html(rows, any_action=any_action, reco_mode=RECO_MODE)
+    html_body = build_pretty_html(rows, any_action=any_action, reco_mode=RECO_MODE)
     text_body = build_text_fallback(rows, any_action=any_action, reco_mode=RECO_MODE)
 
     if not smtp_ready():
@@ -669,7 +635,7 @@ def main():
         print(text_body)
         return
 
-    send_email(subject, html_body, text_body)
+    send_pretty_email(subject, html_body)
 
 
 if __name__ == "__main__":
