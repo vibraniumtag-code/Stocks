@@ -3,7 +3,7 @@ const OWNER = "<vibraniumtag-code";
 const REPO  = "Stocks";
 const WORKFLOW_FILE = "apply_move.yml"; // must match .github/workflows/apply_move.yml
 const BRANCH = "main";
-const PLAN_PATH = "./portfolio_plan.csv"; // file in repo root
+const PLAN_PATH = "../portfolio_plan.csv"; // file in repo root
 // ===============================
 
 const LS_TOKEN_KEY = "pm_exec_pat_v1";
