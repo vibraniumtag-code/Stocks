@@ -1,73 +1,74 @@
-name: Nightly Portfolio Manager
+name: Run Portfolio Manager (Commit Plan)
 
 on:
+  workflow_dispatch:
   schedule:
-    # Runs nightly at 01:10 AM America/Toronto ≈ 06:10 UTC (adjust if you want a different time)
-    - cron: "0 1 * * 1-5"   
-  workflow_dispatch: {}
+    - cron: "30 22 * * 1-5"  # optional: weekdays. remove if you want
 
 permissions:
   contents: write
 
+concurrency:
+  group: portfolio-manager
+  cancel-in-progress: true
+
 jobs:
-  run-portfolio-manager:
+  run:
     runs-on: ubuntu-latest
-    environment: GMAIL 
-
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy yfinance
 
       - name: Run portfolio manager
         env:
-          # Email / SMTP (Secrets)
+          # If your script emails, keep these in secrets. Otherwise remove.
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
-
-          # Optional behavior knobs (repo Variables or hardcode)
-          # If you don't have GitHub "Variables" set, you can hardcode values below
-          CSV_FILE: positions.csv
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+          EMAIL_MODE: always
+          # Force output name if you want:
           PLAN_FILE: portfolio_plan.csv
-
-          MAX_POSITIONS: ${{ vars.MAX_POSITIONS }}
-          CASH_BUFFER_PCT: ${{ vars.CASH_BUFFER_PCT }}
-          MAX_NEW_PER_RUN: ${{ vars.MAX_NEW_PER_RUN }}
-          MAX_CONTRACTS_PER_POSITION: ${{ vars.MAX_CONTRACTS_PER_POSITION }}
-          CONTRACT_MULTIPLIER: ${{ vars.CONTRACT_MULTIPLIER }}
-
-          ATR_PERIOD: ${{ vars.ATR_PERIOD }}
-          ATR_MULTIPLIER: ${{ vars.ATR_MULTIPLIER }}
-          STRUCTURE_10: ${{ vars.STRUCTURE_10 }}
-          STRUCTURE_5: ${{ vars.STRUCTURE_5 }}
-          RECO_MODE: ${{ vars.RECO_MODE }}
-
-          OVERSIZE_MULT: ${{ vars.OVERSIZE_MULT }}
-          TRIM_TO_SLOT: ${{ vars.TRIM_TO_SLOT }}
-
-          # Email behavior: always | action_only
-          EMAIL_MODE: ${{ vars.EMAIL_MODE }}
-
+          CSV_FILE: positions.csv
         run: |
+          set -e
           python portfolio_manager.py
 
-      - name: Upload outputs (plan + entries if created)
-        uses: actions/upload-artifact@v4
-        with:
-          name: nightly-portfolio-output
-          path: |
-            portfolio_plan.csv
-            entries_tomorrow.csv
-          if-no-files-found: ignore
+      - name: Verify plan file exists
+        run: |
+          echo "PWD=$(pwd)"
+          ls -la
+          test -f portfolio_plan.csv && echo "✅ FOUND portfolio_plan.csv" || (echo "❌ MISSING portfolio_plan.csv" && exit 1)
+          echo "---- HEAD (first 5 lines) ----"
+          head -n 5 portfolio_plan.csv || true
+
+      - name: Commit & push (only if changed)
+        run: |
+          set -e
+          git status --porcelain
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add portfolio_plan.csv
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update portfolio plan [auto]"
+          git push
