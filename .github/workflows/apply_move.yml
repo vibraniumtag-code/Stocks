@@ -19,7 +19,7 @@ on:
         type: string
 
       option_name:
-        description: "Option name (existing positions)"
+        description: "Option name (existing positions). Example: NFLX 2026-02-20 P 88"
         required: false
         type: string
 
@@ -36,7 +36,7 @@ on:
         default: "0"
 
       strategy:
-        description: "BUY_CALL / BUY_PUT (BUY rows)"
+        description: "BUY_CALL / BUY_PUT (informational only)"
         required: false
         type: string
 
@@ -46,7 +46,7 @@ on:
         type: string
 
       option_symbol:
-        description: "Option symbol (BUY rows)"
+        description: "OCC option symbol like KO260320C00072500 (BUY rows)"
         required: false
         type: string
 
@@ -80,11 +80,12 @@ jobs:
           echo "option_symbol=${{ inputs.option_symbol }}"
           echo "buy_contracts=${{ inputs.buy_contracts }}"
 
-      - name: Apply move to positions.csv
+      - name: Apply move to positions.csv (strict format)
         run: |
           python - <<'PY'
           import csv
           import os
+          import re
           from datetime import datetime
 
           POS_FILE = "positions.csv"
@@ -93,15 +94,16 @@ jobs:
 
           move_type = "${{ inputs.move_type }}".strip().upper()
           ticker = "${{ inputs.ticker }}".strip().upper()
-          option_name = "${{ inputs.option_name }}".strip()
+          option_name_in = "${{ inputs.option_name }}".strip()
 
           sell_n = int(float(("${{ inputs.sell_contracts }}".strip() or "0")))
           add_n  = int(float(("${{ inputs.add_contracts }}".strip() or "0")))
           buy_n  = int(float(("${{ inputs.buy_contracts }}".strip() or "0")))
 
+          # informational only (not used for formatting)
           strategy = "${{ inputs.strategy }}".strip()
-          expiry = "${{ inputs.expiry }}".strip()
-          option_symbol = "${{ inputs.option_symbol }}".strip()
+          expiry_in = "${{ inputs.expiry }}".strip()
+          option_symbol = "${{ inputs.option_symbol }}".strip().upper()
 
           def to_int(x, default=0):
               try:
@@ -109,55 +111,149 @@ jobs:
               except Exception:
                   return default
 
-          def norm(s: str) -> str:
+          def norm_spaces(s: str) -> str:
+              return " ".join((s or "").strip().split())
+
+          def norm_uc(s: str) -> str:
               return " ".join((s or "").strip().upper().split())
 
+          def parse_occ(sym: str):
+              """
+              OCC/OPRA: KO260320C00072500
+              (Ticker)(YYMMDD)(C/P)(strike*1000 padded to 8 digits)
+              """
+              s = (sym or "").strip().upper()
+              m = re.match(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$", s)
+              if not m:
+                  return None
+              tkr = m.group(1)
+              yymmdd = m.group(2)
+              cp = m.group(3)
+              strike_int = int(m.group(4))
+              strike = strike_int / 1000.0
+              yyyy = 2000 + int(yymmdd[0:2])
+              mm = int(yymmdd[2:4])
+              dd = int(yymmdd[4:6])
+              exp = f"{yyyy:04d}-{mm:02d}-{dd:02d}"
+              return tkr, exp, cp, strike
+
+          def format_option_name(tkr: str, exp: str, cp: str, strike: float) -> str:
+              # strike as minimal string (72.5 not 72.500)
+              strike_txt = f"{strike:g}"
+              return f"{tkr} {exp} {cp} {strike_txt}"
+
+          def ensure_schema(fieldnames):
+              """
+              Ensure required columns exist, preserve any extras.
+              """
+              required = ["ticker","option_name","option_entry_price","entry_date","underlying_entry_price","contracts"]
+              for c in required:
+                  if c not in fieldnames:
+                      fieldnames.append(c)
+              return fieldnames
+
+          # Load positions.csv
           with open(POS_FILE, newline="", encoding="utf-8") as f:
               reader = csv.DictReader(f)
               rows = list(reader)
               fieldnames = reader.fieldnames
 
           if not fieldnames:
-              raise SystemExit("positions.csv has no header/fieldnames")
+              raise SystemExit("positions.csv has no header")
+
+          fieldnames = ensure_schema(list(fieldnames))
+
+          # Normalize existing rows gently (do not destroy pricing/date values)
+          for r in rows:
+              if "ticker" in r:
+                  r["ticker"] = norm_uc(r.get("ticker",""))
+              if "option_name" in r:
+                  r["option_name"] = norm_spaces(r.get("option_name",""))
 
           changed = False
 
+          # --- SELL / ADD update existing row by ticker + option_name
           if move_type in ("SELL", "ADD"):
-              target_t = norm(ticker)
-              target_o = norm(option_name)
+              if not option_name_in:
+                  raise SystemExit("SELL/ADD requires option_name")
+
+              target_t = norm_uc(ticker)
+              target_o = norm_spaces(option_name_in)
 
               found = False
               for r in rows:
-                  if norm(r.get("ticker","")) == target_t and norm(r.get("option_name","")) == target_o:
+                  if norm_uc(r.get("ticker","")) == target_t and norm_spaces(r.get("option_name","")) == target_o:
                       found = True
                       c = to_int(r.get("contracts", 0), 0)
                       if move_type == "SELL":
                           newc = max(c - sell_n, 0)
                       else:
                           newc = c + add_n
+
                       if newc != c:
                           r["contracts"] = str(newc)
                           changed = True
                       break
 
               if not found:
-                  raise SystemExit(f"Could not find position for {ticker} / {option_name}")
+                  raise SystemExit(f"Could not find position for {ticker} / {option_name_in}")
 
+              # Remove any rows that are now 0 contracts (keep positions.csv clean)
+              before = len(rows)
+              rows = [r for r in rows if to_int(r.get("contracts", 0), 0) > 0]
+              if len(rows) != before:
+                  changed = True
+
+          # --- BUY add new row in correct schema/format
           elif move_type == "BUY":
               if buy_n <= 0:
-                  raise SystemExit("BUY requested but buy_contracts <= 0")
+                  raise SystemExit("BUY requires buy_contracts > 0")
 
-              needed_cols = ["ticker","option_name","contracts","option_entry_price","underlying_entry_price"]
-              for col in needed_cols:
-                  if col not in fieldnames:
-                      fieldnames.append(col)
+              # Determine option_name in correct format:
+              # prefer parsing OCC symbol; else accept given option_name if it matches schema.
+              opt_name_final = ""
+              occ = parse_occ(option_symbol) if option_symbol else None
 
-              new_row = {k: "" for k in fieldnames}
-              new_row["ticker"] = ticker
-              new_row["option_name"] = option_name or f"{ticker} {expiry} {strategy} {option_symbol}".strip()
-              new_row["contracts"] = str(buy_n)
-              rows.append(new_row)
-              changed = True
+              if occ:
+                  tkr2, exp2, cp2, strike2 = occ
+                  opt_name_final = format_option_name(tkr2, exp2, cp2, strike2)
+              else:
+                  # If dashboard passes option_name already formatted, use it
+                  if option_name_in:
+                      opt_name_final = norm_spaces(option_name_in)
+                  else:
+                      # last resort: try using expiry + strategy to infer C/P (not ideal)
+                      # but better to fail than write bad format
+                      raise SystemExit("BUY requires option_symbol (preferred) or option_name in 'TICKER YYYY-MM-DD C|P STRIKE' format")
+
+              # Prevent duplicates: if same ticker+option_name exists, just increase contracts
+              target_t = norm_uc(ticker)
+              target_o = norm_spaces(opt_name_final)
+
+              merged = False
+              for r in rows:
+                  if norm_uc(r.get("ticker","")) == target_t and norm_spaces(r.get("option_name","")) == target_o:
+                      c = to_int(r.get("contracts", 0), 0)
+                      r["contracts"] = str(c + buy_n)
+                      merged = True
+                      changed = True
+                      break
+
+              if not merged:
+                  new_row = {k: "" for k in fieldnames}
+                  new_row["ticker"] = ticker
+                  new_row["option_name"] = opt_name_final
+                  new_row["contracts"] = str(buy_n)
+
+                  # Use today as entry_date (UTC). You can change to local later.
+                  new_row["entry_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+
+                  # Leave these blank until you execute the trade and record entry prices:
+                  new_row["option_entry_price"] = ""
+                  new_row["underlying_entry_price"] = ""
+
+                  rows.append(new_row)
+                  changed = True
 
           elif move_type == "HOLD":
               changed = False
@@ -165,6 +261,7 @@ jobs:
           else:
               raise SystemExit(f"Unknown move_type={move_type}")
 
+          # Write back if changed
           if changed:
               tmp = POS_FILE + ".tmp"
               with open(tmp, "w", newline="", encoding="utf-8") as f:
@@ -176,13 +273,20 @@ jobs:
           else:
               print("No changes needed")
 
+          # Ledger
           led = "executions_ledger.csv"
           led_exists = os.path.exists(led)
           with open(led, "a", newline="", encoding="utf-8") as f:
               w = csv.writer(f)
               if not led_exists:
-                  w.writerow(["ts_utc","move_type","ticker","option_name","sell_contracts","add_contracts","buy_contracts","strategy","expiry","option_symbol"])
-              w.writerow([datetime.utcnow().isoformat()+"Z", move_type, ticker, option_name, sell_n, add_n, buy_n, strategy, expiry, option_symbol])
+                  w.writerow(["ts_utc","move_type","ticker","option_name","sell_contracts","add_contracts","buy_contracts","strategy","expiry","option_symbol","move_id"])
+              w.writerow([
+                  datetime.utcnow().isoformat()+"Z",
+                  move_type, ticker, opt_name_final if move_type=="BUY" else option_name_in,
+                  sell_n, add_n, buy_n,
+                  strategy, expiry_in, option_symbol,
+                  "${{ inputs.move_id }}"
+              ])
 
           PY
 
