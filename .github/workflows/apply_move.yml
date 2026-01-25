@@ -1,4 +1,4 @@
-name: Apply Move (Update positions.csv)
+name: Apply Portfolio Move
 
 on:
   workflow_dispatch:
@@ -7,67 +7,67 @@ on:
         description: "Unique move id"
         required: true
         type: string
+
       move_type:
-        description: "SELL | ADD | BUY"
+        description: "SELL | ADD | BUY | HOLD"
         required: true
         type: string
+
       ticker:
         description: "Ticker"
         required: true
         type: string
+
       option_name:
-        description: "Exact option_name as in positions.csv (required for SELL/ADD; optional for BUY if option_symbol provided)"
-        required: false
-        type: string
-      sell_contracts:
-        description: "SELL contracts"
-        required: false
-        type: string
-        default: "0"
-      add_contracts:
-        description: "ADD contracts"
-        required: false
-        type: string
-        default: "0"
-      buy_contracts:
-        description: "BUY contracts"
-        required: false
-        type: string
-        default: "0"
-      strategy:
-        description: "BUY_CALL / BUY_PUT (optional)"
-        required: false
-        type: string
-      expiry:
-        description: "YYYY-MM-DD (optional)"
-        required: false
-        type: string
-      option_symbol:
-        description: "OCC option symbol (e.g., XOM260320C00135000) used to build option_name for BUY"
-        required: false
-        type: string
-      option_entry_price:
-        description: "Actual option fill price (BUY)"
-        required: false
-        type: string
-      underlying_entry_price:
-        description: "Underlying price at execution (BUY)"
+        description: "Option name (existing positions)"
         required: false
         type: string
 
-permissions:
-  contents: write
+      sell_contracts:
+        description: "Contracts to sell"
+        required: false
+        type: string
+        default: "0"
+
+      add_contracts:
+        description: "Contracts to add"
+        required: false
+        type: string
+        default: "0"
+
+      strategy:
+        description: "BUY_CALL / BUY_PUT (BUY rows)"
+        required: false
+        type: string
+
+      expiry:
+        description: "Expiry YYYY-MM-DD (BUY rows)"
+        required: false
+        type: string
+
+      option_symbol:
+        description: "Option symbol (BUY rows)"
+        required: false
+        type: string
+
+      buy_contracts:
+        description: "Contracts to buy"
+        required: false
+        type: string
+        default: "0"
 
 jobs:
   apply:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Show received inputs (debug)
+      - name: Show inputs
         run: |
           echo "move_id=${{ inputs.move_id }}"
           echo "move_type=${{ inputs.move_type }}"
@@ -75,198 +75,96 @@ jobs:
           echo "option_name=${{ inputs.option_name }}"
           echo "sell_contracts=${{ inputs.sell_contracts }}"
           echo "add_contracts=${{ inputs.add_contracts }}"
-          echo "buy_contracts=${{ inputs.buy_contracts }}"
           echo "strategy=${{ inputs.strategy }}"
           echo "expiry=${{ inputs.expiry }}"
           echo "option_symbol=${{ inputs.option_symbol }}"
-          echo "option_entry_price=${{ inputs.option_entry_price }}"
-          echo "underlying_entry_price=${{ inputs.underlying_entry_price }}"
+          echo "buy_contracts=${{ inputs.buy_contracts }}"
 
       - name: Apply move to positions.csv
-        env:
-          MOVE_ID: ${{ inputs.move_id }}
-          MOVE_TYPE: ${{ inputs.move_type }}
-          TICKER: ${{ inputs.ticker }}
-          OPTION_NAME: ${{ inputs.option_name }}
-          SELL_CONTRACTS: ${{ inputs.sell_contracts }}
-          ADD_CONTRACTS: ${{ inputs.add_contracts }}
-          BUY_CONTRACTS: ${{ inputs.buy_contracts }}
-          STRATEGY: ${{ inputs.strategy }}
-          EXPIRY: ${{ inputs.expiry }}
-          OPTION_SYMBOL: ${{ inputs.option_symbol }}
-          OPTION_ENTRY_PRICE: ${{ inputs.option_entry_price }}
-          UNDERLYING_ENTRY_PRICE: ${{ inputs.underlying_entry_price }}
         run: |
           python - <<'PY'
-          import csv, os, re, shutil
+          import csv
+          import os
           from datetime import datetime
 
           POS_FILE = "positions.csv"
-          LEDGER = "executions_ledger.csv"
-
-          DOCS_DIR = "docs"
-          DOCS_POS = os.path.join(DOCS_DIR, "positions.csv")
-          DOCS_LED = os.path.join(DOCS_DIR, "executions_ledger.csv")
-
-          def today():
-              return datetime.utcnow().strftime("%Y-%m-%d")
-
-          def ffloat(s):
-              s = (s or "").strip()
-              if not s: return None
-              try:
-                  v = float(s)
-                  return v if v > 0 else None
-              except:
-                  return None
-
-          def fint(s):
-              s = (s or "").strip()
-              if not s: return 0
-              try:
-                  v = int(float(s))
-                  return max(v, 0)
-              except:
-                  return 0
-
-          def norm(s):
-              return (s or "").strip()
-
-          def decode_occ(occ: str):
-              """
-              OCC like: XOM260320C00135000
-              underlying (1-6), yymmdd (6), C/P (1), strike (8, with 3 decimals)
-              """
-              occ = (occ or "").strip().upper()
-              if not re.match(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$", occ):
-                  return None
-              und = occ[:re.search(r"\d", occ).start()]
-              rest = occ[len(und):]
-              yy = int(rest[0:2]); mm = int(rest[2:4]); dd = int(rest[4:6])
-              cp = rest[6]
-              strike_raw = int(rest[7:15])
-              strike = strike_raw / 1000.0
-              yyyy = 2000 + yy
-              expiry = f"{yyyy:04d}-{mm:02d}-{dd:02d}"
-              side = "C" if cp == "C" else "P"
-              if abs(strike - round(strike)) < 1e-9:
-                  strike_s = str(int(round(strike)))
-              else:
-                  strike_s = f"{strike:.3f}".rstrip("0").rstrip(".")
-              return und, expiry, side, strike_s
-
-          move_id   = norm(os.getenv("MOVE_ID"))
-          move_type = norm(os.getenv("MOVE_TYPE")).upper()
-          ticker    = norm(os.getenv("TICKER")).upper()
-          option_name = norm(os.getenv("OPTION_NAME"))
-
-          sell_n = fint(os.getenv("SELL_CONTRACTS"))
-          add_n  = fint(os.getenv("ADD_CONTRACTS"))
-          buy_n  = fint(os.getenv("BUY_CONTRACTS"))
-
-          option_symbol = norm(os.getenv("OPTION_SYMBOL")).upper()
-          opt_entry_v = ffloat(os.getenv("OPTION_ENTRY_PRICE"))
-          und_entry_v = ffloat(os.getenv("UNDERLYING_ENTRY_PRICE"))
-
           if not os.path.exists(POS_FILE):
               raise SystemExit(f"{POS_FILE} not found")
 
-          # Load positions
-          with open(POS_FILE, "r", newline="", encoding="utf-8") as f:
-              r = csv.DictReader(f)
-              fieldnames = r.fieldnames or []
-              rows = list(r)
+          move_type = "${{ inputs.move_type }}".strip().upper()
+          ticker = "${{ inputs.ticker }}".strip().upper()
+          option_name = "${{ inputs.option_name }}".strip()
 
-          # Force schema to your exact format
-          desired = ["ticker","option_name","option_entry_price","entry_date","underlying_entry_price","contracts"]
-          if [c.strip() for c in fieldnames] != desired:
-              fieldnames = desired
-              norm_rows = []
-              for row in rows:
-                  norm_rows.append({
-                      "ticker": row.get("ticker",""),
-                      "option_name": row.get("option_name",""),
-                      "option_entry_price": row.get("option_entry_price",""),
-                      "entry_date": row.get("entry_date",""),
-                      "underlying_entry_price": row.get("underlying_entry_price",""),
-                      "contracts": row.get("contracts","0"),
-                  })
-              rows = norm_rows
+          sell_n = int(float(("${{ inputs.sell_contracts }}".strip() or "0")))
+          add_n  = int(float(("${{ inputs.add_contracts }}".strip() or "0")))
+          buy_n  = int(float(("${{ inputs.buy_contracts }}".strip() or "0")))
 
-          def row_contracts(row):
+          strategy = "${{ inputs.strategy }}".strip()
+          expiry = "${{ inputs.expiry }}".strip()
+          option_symbol = "${{ inputs.option_symbol }}".strip()
+
+          def to_int(x, default=0):
               try:
-                  return max(int(float(row.get("contracts","0") or 0)), 0)
-              except:
-                  return 0
+                  return max(int(float(x)), 0)
+              except Exception:
+                  return default
 
-          def find_row():
-              for row in rows:
-                  if (row.get("ticker","").strip().upper() == ticker and
-                      row.get("option_name","").strip() == option_name):
-                      return row
-              return None
+          def norm(s: str) -> str:
+              return " ".join((s or "").strip().upper().split())
+
+          with open(POS_FILE, newline="", encoding="utf-8") as f:
+              reader = csv.DictReader(f)
+              rows = list(reader)
+              fieldnames = reader.fieldnames
+
+          if not fieldnames:
+              raise SystemExit("positions.csv has no header/fieldnames")
 
           changed = False
 
-          if move_type in ("SELL","ADD","DELETE"):
-              if not option_name:
-                  raise SystemExit(f"{move_type} requires option_name")
-              if move_type == "SELL" and sell_n <= 0:
-                  raise SystemExit("SELL requires sell_contracts > 0")
-              if move_type == "ADD" and add_n <= 0:
-                  raise SystemExit("ADD requires add_contracts > 0")
-              if move_type == "DELETE":
-                  row = find_row()
-                  if row is None:
-                      raise SystemExit(f"Could not find position to DELETE: {ticker} | {option_name}")
-                  rows.remove(row)
-                  changed = True
-              row = find_row()
-              if row is None:
-                  raise SystemExit(f"Could not find position to {move_type}: {ticker} | {option_name}")
+          if move_type in ("SELL", "ADD"):
+              target_t = norm(ticker)
+              target_o = norm(option_name)
 
-              cur = row_contracts(row)
-              newc = max(cur - sell_n, 0) if move_type == "SELL" else (cur + add_n)
-              if newc != cur:
-                  row["contracts"] = str(newc)
-                  changed = True
+              found = False
+              for r in rows:
+                  if norm(r.get("ticker","")) == target_t and norm(r.get("option_name","")) == target_o:
+                      found = True
+                      c = to_int(r.get("contracts", 0), 0)
+                      if move_type == "SELL":
+                          newc = max(c - sell_n, 0)
+                      else:
+                          newc = c + add_n
+                      if newc != c:
+                          r["contracts"] = str(newc)
+                          changed = True
+                      break
+
+              if not found:
+                  raise SystemExit(f"Could not find position for {ticker} / {option_name}")
 
           elif move_type == "BUY":
               if buy_n <= 0:
-                  raise SystemExit("BUY requires buy_contracts > 0")
+                  raise SystemExit("BUY requested but buy_contracts <= 0")
 
-              # Build option_name if missing using OCC
-              if not option_name:
-                  decoded = decode_occ(option_symbol)
-                  if not decoded:
-                      raise SystemExit("BUY requires option_name OR a valid option_symbol to build it")
-                  und, exp, side, strike_s = decoded
-                  if not ticker:
-                      ticker = und
-                  option_name = f"{ticker} {exp} {side} {strike_s}"
+              needed_cols = ["ticker","option_name","contracts","option_entry_price","underlying_entry_price"]
+              for col in needed_cols:
+                  if col not in fieldnames:
+                      fieldnames.append(col)
 
-              if opt_entry_v is None or und_entry_v is None:
-                  raise SystemExit("BUY requires option_entry_price and underlying_entry_price (both > 0)")
+              new_row = {k: "" for k in fieldnames}
+              new_row["ticker"] = ticker
+              new_row["option_name"] = option_name or f"{ticker} {expiry} {strategy} {option_symbol}".strip()
+              new_row["contracts"] = str(buy_n)
+              rows.append(new_row)
+              changed = True
 
-              row = find_row()
-              if row is not None:
-                  cur = row_contracts(row)
-                  row["contracts"] = str(cur + buy_n)
-                  changed = True
-              else:
-                  rows.append({
-                      "ticker": ticker,
-                      "option_name": option_name,
-                      "option_entry_price": f"{opt_entry_v:.4f}",
-                      "entry_date": today(),
-                      "underlying_entry_price": f"{und_entry_v:.2f}",
-                      "contracts": str(buy_n),
-                  })
-                  changed = True
+          elif move_type == "HOLD":
+              changed = False
+
           else:
               raise SystemExit(f"Unknown move_type={move_type}")
 
-          # Write positions.csv
           if changed:
               tmp = POS_FILE + ".tmp"
               with open(tmp, "w", newline="", encoding="utf-8") as f:
@@ -278,41 +176,20 @@ jobs:
           else:
               print("No changes needed")
 
-          # Ledger append
-          led_exists = os.path.exists(LEDGER)
-          with open(LEDGER, "a", newline="", encoding="utf-8") as f:
+          led = "executions_ledger.csv"
+          led_exists = os.path.exists(led)
+          with open(led, "a", newline="", encoding="utf-8") as f:
               w = csv.writer(f)
               if not led_exists:
-                  w.writerow(["ts_utc","move_id","move_type","ticker","option_name","sell_contracts","add_contracts","buy_contracts","option_entry_price","underlying_entry_price"])
-              w.writerow([
-                  datetime.utcnow().isoformat()+"Z",
-                  move_id, move_type, ticker, option_name,
-                  sell_n, add_n, buy_n,
-                  f"{opt_entry_v:.4f}" if opt_entry_v else "",
-                  f"{und_entry_v:.2f}" if und_entry_v else "",
-              ])
+                  w.writerow(["ts_utc","move_type","ticker","option_name","sell_contracts","add_contracts","buy_contracts","strategy","expiry","option_symbol"])
+              w.writerow([datetime.utcnow().isoformat()+"Z", move_type, ticker, option_name, sell_n, add_n, buy_n, strategy, expiry, option_symbol])
 
-          # Mirror into docs/ for GitHub Pages (ALWAYS if changed)
-          if changed:
-              os.makedirs(DOCS_DIR, exist_ok=True)
-              shutil.copyfile(POS_FILE, DOCS_POS)
-              shutil.copyfile(LEDGER, DOCS_LED)
-              print("Mirrored to docs/positions.csv and docs/executions_ledger.csv")
           PY
 
-      - name: Commit & push (includes docs mirror)
+      - name: Commit and push
         run: |
-          set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # add both source + docs mirror
-          git add positions.csv executions_ledger.csv docs/positions.csv docs/executions_ledger.csv
-
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
-
-          git commit -m "Apply move + mirror to docs [auto]"
+          git add positions.csv executions_ledger.csv || true
+          git commit -m "Apply move: ${{ inputs.move_type }} ${{ inputs.ticker }} (${{ inputs.move_id }})" || echo "No changes to commit"
           git push
