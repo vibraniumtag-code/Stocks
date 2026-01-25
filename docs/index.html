@@ -1,425 +1,345 @@
-/* docs/app.js — prettier dashboard + lock EXECUTE after click */
-const VERSION = "2026-01-25-DASHBOARD-NICE-V1";
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Portfolio Manager Dashboard</title>
 
-const WORKFLOW_FILE = "apply_move.yml";
-const BRANCH = "main";
-const PLAN_CSV = "portfolio_plan.csv";
-
-const els = {
-  owner: document.getElementById("owner"),
-  repo: document.getElementById("repo"),
-  token: document.getElementById("token"),
-  saveBtn: document.getElementById("saveBtn"),
-  loadBtn: document.getElementById("loadBtn"),
-  resetBtn: document.getElementById("resetBtn"),
-  planBody: document.getElementById("planBody"),
-  status: document.getElementById("status"),
-  log: document.getElementById("log"),
-};
-
-const EXEC_STORE_KEY = "pm_executed_moves_v1";
-
-function log(msg) {
-  if (!els.log) return;
-  els.log.textContent = `${new Date().toISOString()}  ${msg}\n` + els.log.textContent;
-}
-function setStatus(msg) {
-  if (!els.status) return;
-  els.status.textContent = msg;
-}
-
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-/** ---------- local persistence of executed moves ---------- */
-function loadExecutedMap() {
-  try {
-    return JSON.parse(localStorage.getItem(EXEC_STORE_KEY) || "{}") || {};
-  } catch {
-    return {};
-  }
-}
-function saveExecutedMap(map) {
-  localStorage.setItem(EXEC_STORE_KEY, JSON.stringify(map || {}));
-}
-function markExecuted(moveId) {
-  const m = loadExecutedMap();
-  m[moveId] = { ts: Date.now() };
-  saveExecutedMap(m);
-}
-function isExecuted(moveId) {
-  const m = loadExecutedMap();
-  return !!m[moveId];
-}
-function resetExecuted() {
-  localStorage.removeItem(EXEC_STORE_KEY);
-}
-
-/** ---------- settings ---------- */
-function loadSettings() {
-  if (els.owner) els.owner.value = localStorage.getItem("pm_owner") || "";
-  if (els.repo) els.repo.value = localStorage.getItem("pm_repo") || "";
-  if (els.token) els.token.value = localStorage.getItem("pm_token") || "";
-}
-function saveSettings() {
-  const o = (els.owner?.value || "").trim();
-  const r = (els.repo?.value || "").trim();
-  const t = (els.token?.value || "");
-  localStorage.setItem("pm_owner", o);
-  localStorage.setItem("pm_repo", r);
-  localStorage.setItem("pm_token", t);
-  setStatus("Saved ✅");
-  log(`Saved owner/repo/token. owner=${o} repo=${r}`);
-}
-
-/** Robust CSV parsing */
-function parseCSV(text) {
-  const rows = [];
-  let row = [], field = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const n = text[i + 1];
-
-    if (inQuotes) {
-      if (c === '"' && n === '"') { field += '"'; i++; }
-      else if (c === '"') inQuotes = false;
-      else field += c;
-    } else {
-      if (c === '"') inQuotes = true;
-      else if (c === ",") { row.push(field); field = ""; }
-      else if (c === "\n") {
-        row.push(field); field = "";
-        if (row.some(x => x.trim() !== "")) rows.push(row);
-        row = [];
-      } else if (c === "\r") { /* ignore */ }
-      else field += c;
+  <style>
+    :root{
+      --bg:#0b1220;
+      --card:#0f172a;
+      --panel:#0b1220;
+      --muted:#94a3b8;
+      --text:#e2e8f0;
+      --line:#1f2a44;
+      --good:#22c55e;
+      --warn:#f59e0b;
+      --bad:#ef4444;
+      --btn:#2563eb;
+      --btn2:#334155;
+      --chip:#111c34;
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
     }
-  }
-  if (field.length || row.length) { row.push(field); rows.push(row); }
-  return rows;
-}
 
-function toObjects(csvText) {
-  const rows = parseCSV(csvText);
-  if (!rows.length) return [];
-  const header = rows[0].map(h => (h || "").trim());
-  const out = [];
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    const obj = {};
-    for (let j = 0; j < header.length; j++) obj[header[j]] = (r[j] ?? "").trim();
-    if (Object.values(obj).some(v => (v || "").trim() !== "")) out.push(obj);
-  }
-  return out;
-}
-
-function pill(type) {
-  const t = (type || "").toUpperCase();
-  if (t === "SELL") return `<span class="pill sell">SELL</span>`;
-  if (t === "BUY") return `<span class="pill buy">BUY</span>`;
-  if (t === "ADD") return `<span class="pill add">ADD</span>`;
-  if (t === "HOLD") return `<span class="pill hold">HOLD</span>`;
-  return `<span class="pill">${escapeHtml(type || "")}</span>`;
-}
-
-function getMoveTypeFromRow(row) {
-  return (row["Type"] || "").trim().toUpperCase();
-}
-
-function buildMoveId(row, idx) {
-  const t = (row["Ticker"] || "").trim().toUpperCase();
-  const ty = (row["Type"] || "").trim().toUpperCase();
-  const opt = (row["Option"] || "").trim();
-  const sym = (row["OptionSymbol"] || "").trim();
-  return `${idx + 1}-${ty}-${t}-${(sym || opt || "NA")}`.replaceAll(" ", "_").slice(0, 120);
-}
-
-function askInt(label, defaultVal) {
-  const raw = prompt(`${label}\n(Default: ${defaultVal})`, String(defaultVal ?? "").trim());
-  if (raw === null) return null;
-  const v = Number(String(raw).trim());
-  if (!Number.isFinite(v) || v < 0) return NaN;
-  return Math.floor(v);
-}
-function askFloat(label) {
-  const raw = prompt(label, "");
-  if (raw === null) return null;
-  const s = String(raw).trim().replace("$", "");
-  const v = Number(s);
-  if (!Number.isFinite(v) || v <= 0) return NaN;
-  return v;
-}
-
-async function loadPlan() {
-  setStatus("Loading plan…");
-  if (els.planBody) els.planBody.innerHTML = `<tr><td colspan="12" style="padding:14px;">Loading…</td></tr>`;
-
-  try {
-    const url = `${PLAN_CSV}?ts=${Date.now()}`;
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) throw new Error(`Failed to load plan: ${res.status}`);
-    const text = await res.text();
-    const rows = toObjects(text);
-    setStatus(`Loaded rows: ${rows.length}`);
-    log(`Loaded plan rows=${rows.length} from docs/${PLAN_CSV}`);
-    renderTable(rows);
-  } catch (e) {
-    setStatus("Load failed ❌");
-    if (els.planBody) {
-      els.planBody.innerHTML =
-        `<tr><td colspan="12" style="padding:14px;color:#fecaca;">${escapeHtml(e.message)}</td></tr>`;
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, rgba(37,99,235,.25), transparent 55%),
+                  radial-gradient(900px 500px at 85% 10%, rgba(34,197,94,.18), transparent 55%),
+                  var(--bg);
+      color:var(--text);
     }
-    log(`ERROR: ${e.message}`);
-  }
-}
 
-function renderTable(rows) {
-  if (!els.planBody) return;
+    .wrap{max-width:1200px;margin:0 auto;padding:18px 14px 40px;}
+    .topbar{
+      display:flex; gap:12px; align-items:flex-start; justify-content:space-between;
+      margin-bottom:14px;
+    }
+    .brand{
+      display:flex; flex-direction:column; gap:6px;
+    }
+    .brand h1{
+      font-size:18px; margin:0; letter-spacing:.2px;
+      display:flex; align-items:center; gap:8px;
+    }
+    .brand p{margin:0;color:var(--muted);font-size:12px;line-height:1.35}
+    .chips{display:flex; flex-wrap:wrap; gap:8px; margin-top:2px;}
+    .chip{
+      background: rgba(255,255,255,.05);
+      border:1px solid rgba(255,255,255,.08);
+      padding:6px 10px;
+      border-radius:999px;
+      font-size:12px;
+      color:var(--muted);
+    }
 
-  if (!rows.length) {
-    els.planBody.innerHTML = `<tr><td colspan="12" style="padding:14px;">Plan is empty.</td></tr>`;
-    return;
-  }
+    .grid{
+      display:grid;
+      grid-template-columns: 1.2fr .8fr;
+      gap:14px;
+      align-items:start;
+    }
+    @media (max-width: 960px){
+      .grid{grid-template-columns: 1fr;}
+    }
 
-  // Put actionable rows first
-  rows.sort((a, b) => {
-    const ta = getMoveTypeFromRow(a);
-    const tb = getMoveTypeFromRow(b);
-    const pa = (ta === "HOLD" || ta === "") ? 1 : 0;
-    const pb = (tb === "HOLD" || tb === "") ? 1 : 0;
-    if (pa !== pb) return pa - pb;
-    return String((a["Ticker"] || "")).localeCompare(String((b["Ticker"] || "")));
-  });
+    .card{
+      background: rgba(255,255,255,.03);
+      border:1px solid rgba(255,255,255,.10);
+      border-radius:16px;
+      box-shadow: var(--shadow);
+      overflow:hidden;
+    }
+    .card .hd{
+      padding:14px 14px 10px;
+      border-bottom:1px solid rgba(255,255,255,.08);
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+      background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.01));
+    }
+    .title{
+      font-size:13px; font-weight:800; letter-spacing:.25px;
+      display:flex; align-items:center; gap:8px;
+    }
+    .sub{
+      font-size:12px;color:var(--muted);
+    }
+    .card .bd{padding:14px}
 
-  const html = rows.map((r, idx) => {
-    const type = getMoveTypeFromRow(r);
-    const ticker = (r["Ticker"] || "").trim().toUpperCase();
-    const optionName = (r["Option"] || "").trim();
-    const strategy = (r["Strategy"] || "").trim();
-    const expiry = (r["Expiry"] || "").trim();
-    const optionSymbol = (r["OptionSymbol"] || "").trim();
-    const reason = (r["Reason"] || "").trim();
+    .form{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:10px;
+    }
+    @media (max-width: 520px){ .form{grid-template-columns: 1fr;} }
 
-    const moveId = buildMoveId(r, idx);
-    const done = isExecuted(moveId);
+    label{font-size:11px;color:var(--muted);display:block;margin:0 0 6px 2px;}
+    input{
+      width:100%;
+      padding:10px 10px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.04);
+      color:var(--text);
+      outline:none;
+    }
+    input::placeholder{color:rgba(148,163,184,.7)}
+    .btnrow{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;}
+    button{
+      border:0; cursor:pointer;
+      padding:10px 12px;
+      border-radius:12px;
+      font-weight:800;
+      font-size:12px;
+      color:white;
+      background: var(--btn);
+      transition: transform .06s ease, opacity .2s ease, filter .2s ease;
+    }
+    button:hover{filter:brightness(1.05)}
+    button:active{transform: translateY(1px)}
+    button.secondary{background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12)}
+    button.ghost{background:transparent;border:1px solid rgba(255,255,255,.14); color:var(--text)}
+    button:disabled{
+      opacity:.45; cursor:not-allowed; filter:saturate(.2);
+    }
 
-    const sellC = (r["SellContracts"] || "0").trim();
-    const addC  = (r["AddContracts"] || "0").trim();
-    const buyC  = (r["BuyContracts"] || "0").trim();
+    .status{
+      font-size:12px;
+      color:var(--muted);
+      padding:10px 12px;
+      background: rgba(255,255,255,.04);
+      border:1px solid rgba(255,255,255,.08);
+      border-radius:12px;
+      margin-top:12px;
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+    }
 
-    const executeDisabled = done || type === "HOLD" || type === "";
-    const execLabel = done ? `Executed ✅` : `EXECUTE · Update CSV`;
+    .tablewrap{
+      overflow:auto;
+      border-radius:14px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(3,7,18,.35);
+    }
+    table{
+      width:100%;
+      border-collapse:collapse;
+      min-width: 980px;
+    }
+    thead th{
+      position:sticky; top:0; z-index:3;
+      text-align:left;
+      font-size:11px;
+      color:#cbd5e1;
+      background: rgba(15,23,42,.95);
+      border-bottom:1px solid rgba(255,255,255,.08);
+      padding:10px 10px;
+      white-space:nowrap;
+    }
+    tbody td{
+      border-bottom:1px solid rgba(255,255,255,.06);
+      padding:10px 10px;
+      font-size:12px;
+      vertical-align:top;
+    }
+    tbody tr:hover{background: rgba(255,255,255,.03);}
+    .mono{font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;}
+    .num{text-align:right; font-variant-numeric: tabular-nums;}
+    .muted{color:var(--muted)}
+    .small{font-size:11px}
+    .wraptext{max-width:320px; word-break:break-word}
 
-    return `
-      <tr class="${done ? "row-done" : ""}"
-          data-moveid="${escapeHtml(moveId)}"
-          data-type="${escapeHtml(type)}"
-          data-ticker="${escapeHtml(ticker)}"
-          data-option="${escapeHtml(optionName)}"
-          data-sell="${escapeHtml(sellC)}"
-          data-add="${escapeHtml(addC)}"
-          data-buy="${escapeHtml(buyC)}"
-          data-strategy="${escapeHtml(strategy)}"
-          data-expiry="${escapeHtml(expiry)}"
-          data-symbol="${escapeHtml(optionSymbol)}"
-      >
-        <td>${pill(type)}</td>
-        <td class="mono">${escapeHtml(ticker)}</td>
-        <td class="mono wraptext">${escapeHtml(optionName || "-")}</td>
-        <td class="num">${escapeHtml(r["ContractsHeld"] || "")}</td>
-        <td class="num">${escapeHtml(sellC)}</td>
-        <td class="num">${escapeHtml(addC)}</td>
-        <td class="num">${escapeHtml(buyC)}</td>
-        <td>${escapeHtml(strategy || "-")}</td>
-        <td class="mono">${escapeHtml(expiry || "-")}</td>
-        <td class="mono">${escapeHtml(optionSymbol || "-")}</td>
-        <td class="muted wraptext">${escapeHtml(reason || "-")}</td>
-        <td>
-          <div class="act">
-            <button class="btnmini btn-ack" data-action="ack">ACK</button>
-            <button class="btnmini btn-exec" data-action="execute" ${executeDisabled ? "disabled" : ""}>
-              ${done ? "Executed ✅" : "EXECUTE · Update CSV"}
-            </button>
-            ${done ? `<span class="doneTag">Locked</span>` : ``}
+    .pill{
+      display:inline-flex; align-items:center; gap:6px;
+      padding:3px 10px;
+      border-radius:999px;
+      font-size:11px;
+      font-weight:900;
+      border:1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.05);
+      color:#cbd5e1;
+      white-space:nowrap;
+    }
+    .pill.sell{background: rgba(239,68,68,.10); border-color: rgba(239,68,68,.25); color:#fecaca;}
+    .pill.buy{background: rgba(34,197,94,.10); border-color: rgba(34,197,94,.25); color:#bbf7d0;}
+    .pill.add{background: rgba(245,158,11,.10); border-color: rgba(245,158,11,.25); color:#fde68a;}
+    .pill.hold{background: rgba(148,163,184,.10); border-color: rgba(148,163,184,.18); color:#e2e8f0;}
+
+    .act{
+      display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+    }
+    .btnmini{
+      padding:8px 10px;
+      border-radius:12px;
+      font-size:12px;
+      font-weight:900;
+    }
+    .btn-ack{background: rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12)}
+    .btn-exec{background: rgba(245,158,11,.18); border:1px solid rgba(245,158,11,.25)}
+    .btn-exec:hover{filter:brightness(1.08)}
+    .doneTag{
+      display:inline-flex;
+      padding:6px 10px;
+      border-radius:12px;
+      font-size:11px;
+      font-weight:900;
+      background: rgba(34,197,94,.12);
+      border:1px solid rgba(34,197,94,.22);
+      color:#bbf7d0;
+    }
+    .row-done{
+      opacity:.65;
+    }
+
+    .spinner{
+      width:14px;height:14px;border-radius:50%;
+      border:2px solid rgba(255,255,255,.35);
+      border-top-color: rgba(255,255,255,.95);
+      display:inline-block;
+      animation: spin .75s linear infinite;
+      vertical-align:middle;
+    }
+    @keyframes spin{to{transform: rotate(360deg)}}
+
+    pre{
+      margin:0;
+      padding:12px;
+      border-radius:14px;
+      background: rgba(0,0,0,.35);
+      border:1px solid rgba(255,255,255,.10);
+      color:#cbd5e1;
+      font-size:11px;
+      overflow:auto;
+      max-height: 260px;
+      white-space:pre-wrap;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="brand">
+        <h1>📊 Portfolio Manager Dashboard</h1>
+        <p>Load today’s plan, ACK what you did, and EXECUTE to update <span class="mono">positions.csv</span> via GitHub Actions.</p>
+        <div class="chips">
+          <span class="chip">Mobile friendly</span>
+          <span class="chip">Exec button locks after click</span>
+          <span class="chip">State persists (localStorage)</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="hd">
+          <div>
+            <div class="title">✅ Action Plan</div>
+            <div class="sub">Loaded from <span class="mono">docs/portfolio_plan.csv</span></div>
           </div>
-        </td>
-      </tr>
-    `;
-  }).join("");
+          <div class="act">
+            <button id="loadBtn" class="ghost">↻ Reload Plan</button>
+            <button id="resetBtn" class="secondary">Reset “Executed” Flags</button>
+          </div>
+        </div>
 
-  els.planBody.innerHTML = html;
+        <div class="bd">
+          <div class="status">
+            <div id="status">Ready.</div>
+            <div class="muted small">Tip: Table scrolls horizontally on iPhone.</div>
+          </div>
 
-  els.planBody.querySelectorAll("button[data-action]").forEach(btn => {
-    btn.addEventListener("click", onActionClick);
-  });
-}
+          <div style="height:12px"></div>
 
-async function onActionClick(e) {
-  const btn = e.currentTarget;
-  const action = btn.getAttribute("data-action");
-  const tr = btn.closest("tr");
-  if (!tr) return;
+          <div class="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Ticker</th>
+                  <th>Option</th>
+                  <th class="num">Held</th>
+                  <th class="num">Sell</th>
+                  <th class="num">Add</th>
+                  <th class="num">Buy</th>
+                  <th>Strategy</th>
+                  <th>Expiry</th>
+                  <th>OptionSymbol</th>
+                  <th>Reason</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="planBody">
+                <tr><td colspan="12" style="padding:14px;">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
 
-  const moveId = tr.getAttribute("data-moveid") || `move_${Date.now()}`;
-  const type = (tr.getAttribute("data-type") || "").toUpperCase();
-  const ticker = (tr.getAttribute("data-ticker") || "").toUpperCase();
-  let optionName = tr.getAttribute("data-option") || "";
+          <div style="margin-top:12px" class="muted small">
+            “Executed” status is stored locally on your phone. It doesn’t mean the workflow succeeded—check the Actions run.
+          </div>
+        </div>
+      </div>
 
-  let sellContracts = tr.getAttribute("data-sell") || "0";
-  let addContracts  = tr.getAttribute("data-add") || "0";
-  let buyContracts  = tr.getAttribute("data-buy") || "0";
+      <div class="card">
+        <div class="hd">
+          <div>
+            <div class="title">🔐 Repo Settings</div>
+            <div class="sub">Saved in localStorage on this device</div>
+          </div>
+          <button id="saveBtn" class="ghost">Save Token</button>
+        </div>
+        <div class="bd">
+          <div class="form">
+            <div>
+              <label>Owner</label>
+              <input id="owner" placeholder="e.g. your-github-username"/>
+            </div>
+            <div>
+              <label>Repo</label>
+              <input id="repo" placeholder="e.g. turtle-trader"/>
+            </div>
+            <div style="grid-column:1/-1">
+              <label>Personal Access Token (classic) — stored locally</label>
+              <input id="token" placeholder="ghp_..." />
+              <div class="muted small" style="margin-top:8px">
+                Needs permission to dispatch workflows. Keep it private.
+              </div>
+            </div>
+          </div>
 
-  const strategy = tr.getAttribute("data-strategy") || "";
-  const expiry = tr.getAttribute("data-expiry") || "";
-  const optionSymbol = tr.getAttribute("data-symbol") || "";
+          <div style="height:12px"></div>
 
-  if (action === "ack") {
-    log(`✅ ACK: ${type} ${ticker} ${optionName || ""}`);
-    alert(`ACK only (no repo changes).\n\n${type} ${ticker}\n${optionName || ""}`);
-    return;
-  }
+          <div class="title">🧾 Log</div>
+          <div class="sub">If something fails, paste the top log lines here</div>
+          <div style="height:8px"></div>
+          <pre id="log"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
 
-  // EXECUTE
-  const owner = (els.owner?.value || "").trim();
-  const repo = (els.repo?.value || "").trim();
-  const token = els.token?.value || "";
-
-  if (!owner || !repo) return alert("Please set owner + repo.");
-  if (!token) return alert("No token saved. Paste your PAT and click Save Token first.");
-
-  // Contract overrides (better real-life UX)
-  if (type === "SELL") {
-    const v = askInt(`SELL ${ticker}\nHow many contracts did you actually SELL?`, sellContracts || "0");
-    if (v === null) return;
-    if (Number.isNaN(v) || v <= 0) return alert("SELL contracts must be > 0");
-    sellContracts = String(v);
-  } else if (type === "ADD") {
-    const v = askInt(`ADD ${ticker}\nHow many contracts did you actually ADD?`, addContracts || "0");
-    if (v === null) return;
-    if (Number.isNaN(v) || v <= 0) return alert("ADD contracts must be > 0");
-    addContracts = String(v);
-  } else if (type === "BUY") {
-    const v = askInt(`BUY ${ticker}\nHow many contracts did you actually BUY?`, buyContracts || "0");
-    if (v === null) return;
-    if (Number.isNaN(v) || v <= 0) return alert("BUY contracts must be > 0");
-    buyContracts = String(v);
-  }
-
-  // SELL/ADD requires option_name
-  if ((type === "SELL" || type === "ADD") && (!optionName || optionName.trim() === "")) {
-    optionName = prompt("Missing option_name.\nPaste exactly as in positions.csv\nExample: NFLX 2026-02-20 P 88", "");
-    if (!optionName || optionName.trim() === "") return alert("SELL/ADD requires option_name.");
-  }
-
-  // BUY needs actual fills
-  let optionEntryPrice = "";
-  let underlyingEntryPrice = "";
-  if (type === "BUY") {
-    const op = askFloat("Enter OPTION fill price (avg fill). Example: 4.52");
-    if (op === null) return;
-    if (Number.isNaN(op)) return alert("BUY requires a valid option fill price > 0");
-    optionEntryPrice = String(op);
-
-    const up = askFloat("Enter UNDERLYING price at execution. Example: 135.12");
-    if (up === null) return;
-    if (Number.isNaN(up)) return alert("BUY requires a valid underlying price > 0");
-    underlyingEntryPrice = String(up);
-  }
-
-  const ok = confirm(
-    `EXECUTE will dispatch GitHub Action to update positions.csv.\n\n` +
-    `${type} ${ticker}\n` +
-    `${optionName || "(will be built from option_symbol)"}\n\n` +
-    `Counts: SELL=${sellContracts} ADD=${addContracts} BUY=${buyContracts}\n` +
-    (type === "BUY" ? `Prices: option=${optionEntryPrice} underlying=${underlyingEntryPrice}\n\n` : "\n") +
-    `Proceed?`
-  );
-  if (!ok) return;
-
-  // UI: lock + spinner immediately
-  const oldHtml = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = `<span class="spinner"></span>&nbsp;Dispatching…`;
-
-  try {
-    const inputs = {
-      move_id: moveId,
-      move_type: type,
-      ticker: ticker,
-      option_name: optionName || "",
-      sell_contracts: sellContracts || "0",
-      add_contracts: addContracts || "0",
-      buy_contracts: buyContracts || "0",
-      strategy: strategy || "",
-      expiry: expiry || "",
-      option_symbol: optionSymbol || "",
-      option_entry_price: optionEntryPrice || "",
-      underlying_entry_price: underlyingEntryPrice || "",
-    };
-
-    log(`DISPATCH inputs=${JSON.stringify(inputs)}`);
-    await dispatchWorkflow({ owner, repo, token, inputs });
-
-    // Mark executed locally (dims row + locks)
-    markExecuted(moveId);
-    tr.classList.add("row-done");
-
-    btn.innerHTML = "Executed ✅";
-    btn.disabled = true;
-
-    setStatus(`Dispatched ✅ ${type} ${ticker}`);
-    log(`🚀 Dispatch OK: ${type} ${ticker} move_id=${moveId}`);
-    alert("✅ Dispatched. Check Actions tab for status. If successful, positions.csv will be committed.");
-  } catch (err) {
-    btn.disabled = false;
-    btn.innerHTML = oldHtml;
-    setStatus("Dispatch failed ❌");
-    log(`❌ Dispatch failed: ${err.message}`);
-    alert(`❌ Dispatch failed:\n${err.message}`);
-  }
-}
-
-async function dispatchWorkflow({ owner, repo, token, inputs }) {
-  const url = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`;
-  const body = { ref: BRANCH, inputs };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Accept": "application/vnd.github+json",
-      "Authorization": `token ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    let msg = `${res.status} ${res.statusText}`;
-    try {
-      const j = await res.json();
-      msg = `${res.status}: ${JSON.stringify(j)}`;
-    } catch {}
-    throw new Error(msg);
-  }
-}
-
-/** wiring */
-if (els.saveBtn) els.saveBtn.addEventListener("click", saveSettings);
-if (els.loadBtn) els.loadBtn.addEventListener("click", loadPlan);
-if (els.resetBtn) els.resetBtn.addEventListener("click", () => {
-  if (!confirm("Reset all local Executed/Locked flags on this device?")) return;
-  resetExecuted();
-  loadPlan();
-  setStatus("Reset executed flags ✅");
-  log("Reset executed flags (localStorage).");
-});
-
-loadSettings();
-loadPlan();
-log(`Dashboard ready. VERSION=${VERSION}`);
+  <!-- Cache-bust the JS so iOS actually loads updates -->
+  <script src="./app.js?v=20260125-1500" defer></script>
+</body>
+</html>
