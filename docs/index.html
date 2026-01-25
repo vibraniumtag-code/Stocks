@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Portfolio Manager — Execution UI</title>
+  <style>
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; background:#f6f7fb; color:#111827; }
+    .wrap { max-width:1100px; margin:0 auto; padding:18px 12px 28px; }
+    .card { background:#fff; border:1px solid #e5e7eb; border-radius:16px; overflow:hidden; }
+    .header { background:#0b1220; color:#fff; padding:16px 18px; }
+    .title { font-weight:900; font-size:18px; }
+    .sub { opacity:.9; font-size:12px; margin-top:6px; }
+    .content { padding:14px 16px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+    input[type="password"] { padding:10px; border:1px solid #e5e7eb; border-radius:12px; width:360px; max-width:100%; }
+    button { padding:10px 12px; border:1px solid #e5e7eb; border-radius:12px; background:#fff; font-weight:800; cursor:pointer; }
+    button.primary { background:#0b1220; color:#fff; border-color:#0b1220; }
+    button.danger { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
+    button.warn { background:#fff7ed; border-color:#fed7aa; color:#9a3412; }
+    .muted { color:#6b7280; font-size:12px; }
+    .ok { color:#065f46; }
+    .bad { color:#991b1b; }
+    .tableWrap { border:1px solid #e5e7eb; border-radius:12px; overflow:hidden; margin-top:10px; }
+    table { width:100%; border-collapse:collapse; }
+    th { background:#f9fafb; border-bottom:1px solid #e5e7eb; padding:10px; font-size:12px; text-align:left; white-space:nowrap; }
+    td { border-bottom:1px solid #f1f5f9; padding:10px; font-size:12px; vertical-align:top; white-space:nowrap; }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace; }
+    .num { text-align:right; font-variant-numeric:tabular-nums; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-weight:900; font-size:11px; border:1px solid #e5e7eb; background:#f3f4f6; color:#374151; }
+    .pill-sell { background:#fff7ed; border-color:#fed7aa; color:#9a3412; }
+    .pill-add { background:#eef2ff; border-color:#e0e7ff; color:#3730a3; }
+    .pill-buy { background:#ecfdf5; border-color:#d1fae5; color:#065f46; }
+    .pill-hold { background:#f9fafb; border-color:#e5e7eb; color:#374151; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    .small { font-size:11px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="header">
+        <div class="title">🧭 Portfolio Execution UI</div>
+        <div class="sub">Reads <span class="mono">portfolio_plan.csv</span> · Buttons trigger a GitHub Action to update <span class="mono">positions.csv</span></div>
+      </div>
+      <div class="content">
+        <div class="row">
+          <input id="token" type="password" placeholder="Paste GitHub Fine-Grained PAT (stored locally in your browser)"/>
+          <button class="primary" id="saveToken">Save Token</button>
+          <button id="clearToken">Clear</button>
+          <button id="refresh">Refresh Plan</button>
+        </div>
+        <div class="muted">
+          Token needs repo access + Actions workflow dispatch. Stored in <span class="mono">localStorage</span> on this device only.
+        </div>
+
+        <div class="row" style="margin-top:10px;">
+          <div class="muted">Status:</div>
+          <div id="status" class="muted mono">Idle</div>
+        </div>
+
+        <div class="tableWrap">
+          <div style="overflow:auto;">
+            <table id="planTable">
+              <thead>
+                <tr>
+                  <th>MoveId</th>
+                  <th>Type</th>
+                  <th>Ticker</th>
+                  <th>Option / Symbol</th>
+                  <th class="num">Held</th>
+                  <th class="num">Sell</th>
+                  <th class="num">Add</th>
+                  <th class="num">Buy</th>
+                  <th class="num">Est Cost</th>
+                  <th>Reason</th>
+                  <th>Buttons</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td colspan="11" class="muted">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="muted small" style="margin-top:10px;">
+          Notes: SELL/ADD mutate <span class="mono">positions.csv</span>. BUY is acknowledge-only unless your plan includes a full <span class="mono">option_name</span>.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
