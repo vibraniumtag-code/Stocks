@@ -3,7 +3,7 @@ name: Run Portfolio Manager (Commit Plan)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 22 * * *"  # optional: weekdays. remove if you want
+    - cron: "30 22 * * *"
 
 permissions:
   contents: write
@@ -15,7 +15,8 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    environment: GMAIL   # <-- remove this line if you're NOT using Environment secrets
+    # TEMP TEST: comment this out to confirm env secrets aren't the issue
+    environment: GMAIL
 
     steps:
       - name: Checkout
@@ -33,6 +34,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas numpy yfinance
 
+      # ✅ NEW: prove the job can see secrets (won't print values)
+      - name: Sanity check email env vars exist (no values printed)
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+        run: |
+          set -e
+          for v in SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS EMAIL_TO; do
+            if [ -z "${!v}" ]; then
+              echo "❌ Missing env var: $v (secrets not available to this workflow run)"
+              exit 1
+            else
+              echo "✅ Present: $v"
+            fi
+          done
+
+      # ✅ NEW: show what branch + event triggered it (schedule only runs default branch)
+      - name: Show context
+        run: |
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Ref:   $GITHUB_REF"
+          echo "SHA:   $GITHUB_SHA"
+
       - name: Run portfolio manager
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -45,12 +72,12 @@ jobs:
           PLAN_FILE: portfolio_plan.csv
           CSV_FILE: positions.csv
 
-          # (optional) in case your script supports these envs
           DOCS_DIR: docs
           PLAN_DOCS_FILE: docs/portfolio_plan.csv
         run: |
           set -e
-          python portfolio_manager.py
+          echo "Running portfolio_manager.py..."
+          python -u portfolio_manager.py
 
       - name: Verify plan files exist
         run: |
@@ -75,7 +102,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stage ONLY the plan files (avoid __pycache__ noise)
           git add portfolio_plan.csv docs/portfolio_plan.csv
 
           echo "---- STAGED ----"
