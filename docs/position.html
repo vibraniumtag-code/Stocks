@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>positions.csv Editor</title>
+  <style>
+    :root{
+      --bg:#0b1220; --text:#e2e8f0; --muted:#94a3b8; --line:#1f2a44;
+      --card: rgba(255,255,255,.03); --shadow: 0 10px 30px rgba(0,0,0,.35);
+      --btn:#2563eb; --ok:#22c55e; --bad:#ef4444;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+      background: radial-gradient(1000px 600px at 20% -10%, rgba(37,99,235,.25), transparent 55%), var(--bg);
+      color:var(--text);
+    }
+    .wrap{max-width:1200px;margin:0 auto;padding:18px 14px 40px;}
+    .top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+    h1{margin:0;font-size:18px}
+    .muted{color:var(--muted);font-size:12px;line-height:1.35}
+    .card{background:var(--card);border:1px solid rgba(255,255,255,.10);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+    .hd{padding:14px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+    .btnrow{display:flex;gap:10px;flex-wrap:wrap}
+    button{
+      border:0; cursor:pointer; padding:10px 12px; border-radius:12px;
+      font-weight:800; font-size:12px; color:white; background:var(--btn);
+    }
+    button.secondary{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);color:var(--text)}
+    button:disabled{opacity:.45;cursor:not-allowed}
+    .status{padding:10px 12px;border:1px solid rgba(255,255,255,.10);border-radius:12px;background:rgba(255,255,255,.04);font-size:12px;color:var(--muted)}
+    .bd{padding:14px}
+    .tablewrap{overflow:auto;border:1px solid rgba(255,255,255,.10);border-radius:14px;background:rgba(3,7,18,.35)}
+    table{width:100%;border-collapse:collapse;min-width:900px}
+    th,td{border-bottom:1px solid rgba(255,255,255,.06);padding:10px;font-size:12px;vertical-align:top}
+    th{position:sticky;top:0;background:rgba(15,23,42,.95);text-align:left;color:#cbd5e1;font-size:11px;white-space:nowrap}
+    tr:hover td{background:rgba(255,255,255,.03)}
+    input.cell{
+      width:100%; padding:8px 8px; border-radius:10px;
+      border:1px solid rgba(255,255,255,.12);
+      background:rgba(255,255,255,.04); color:var(--text); outline:none;
+      font-size:12px;
+    }
+    input.cell.changed{border-color: rgba(34,197,94,.40); box-shadow: 0 0 0 2px rgba(34,197,94,.12) inset;}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+    .num{text-align:right;font-variant-numeric:tabular-nums}
+    .warn{color:#fde68a}
+    .ok{color:#bbf7d0}
+    .bad{color:#fecaca}
+    .small{font-size:11px}
+    a{color:#93c5fd}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <h1>🧾 positions.csv Editor</h1>
+        <div class="muted">
+          Edit cells → <b>Save</b> dispatches an action that commits <span class="mono">positions.csv</span><br/>
+          and also copies it to <span class="mono">docs/positions.csv</span> for Pages.
+        </div>
+        <div class="muted small" style="margin-top:6px;">
+          Back to dashboard: <a href="./index.html">Portfolio Plan</a>
+        </div>
+      </div>
+      <div style="min-width:280px;flex:0 0 360px;">
+        <div class="status" id="status">Ready.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="hd">
+        <div class="btnrow">
+          <button id="loadBtn" class="secondary">↻ Reload</button>
+          <button id="addRowBtn" class="secondary">＋ Add Row</button>
+          <button id="downloadBtn" class="secondary">⬇︎ Download CSV</button>
+        </div>
+        <div class="btnrow">
+          <button id="saveBtn">💾 Save to GitHub (commit)</button>
+        </div>
+      </div>
+      <div class="bd">
+        <div class="tablewrap">
+          <table>
+            <thead><tr id="thead"></tr></thead>
+            <tbody id="tbody">
+              <tr><td style="padding:14px;">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="muted small" style="margin-top:10px;">
+          Required columns expected by your scripts:
+          <span class="mono">ticker, option_name, option_entry_price, entry_date, underlying_entry_price, contracts</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./positions.js?v=20260125-1900" defer></script>
+</body>
+</html>
