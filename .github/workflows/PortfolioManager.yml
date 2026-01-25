@@ -17,8 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: GMAIL   # <-- remove this line if you're NOT using Environment secrets
 
-
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,37 +35,51 @@ jobs:
 
       - name: Run portfolio manager
         env:
-          # If your script emails, keep these in secrets. Otherwise remove.
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_TO:   ${{ secrets.EMAIL_TO }}
           EMAIL_MODE: always
-          # Force output name if you want:
+
           PLAN_FILE: portfolio_plan.csv
           CSV_FILE: positions.csv
+
+          # (optional) in case your script supports these envs
+          DOCS_DIR: docs
+          PLAN_DOCS_FILE: docs/portfolio_plan.csv
         run: |
           set -e
           python portfolio_manager.py
 
-      - name: Verify plan file exists
+      - name: Verify plan files exist
         run: |
           echo "PWD=$(pwd)"
           ls -la
+          echo "---- docs dir ----"
+          ls -la docs || true
+
           test -f portfolio_plan.csv && echo "✅ FOUND portfolio_plan.csv" || (echo "❌ MISSING portfolio_plan.csv" && exit 1)
-          echo "---- HEAD (first 5 lines) ----"
+          test -f docs/portfolio_plan.csv && echo "✅ FOUND docs/portfolio_plan.csv" || (echo "❌ MISSING docs/portfolio_plan.csv" && exit 1)
+
+          echo "---- HEAD portfolio_plan.csv (first 5 lines) ----"
           head -n 5 portfolio_plan.csv || true
+
+          echo "---- HEAD docs/portfolio_plan.csv (first 5 lines) ----"
+          head -n 5 docs/portfolio_plan.csv || true
 
       - name: Commit & push (only if changed)
         run: |
           set -e
-          git status --porcelain
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add portfolio_plan.csv
+          # Stage ONLY the plan files (avoid __pycache__ noise)
+          git add portfolio_plan.csv docs/portfolio_plan.csv
+
+          echo "---- STAGED ----"
+          git status --porcelain
 
           if git diff --cached --quiet; then
             echo "No changes to commit."
