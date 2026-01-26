@@ -3,7 +3,7 @@ name: Run Portfolio Manager (Commit Plan)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 22 * * *"
+    - cron: "0 2 * * *"   # Mon–Fri 01:00 UTC (9:00 PM ET / Toronto)
 
 permissions:
   contents: write
