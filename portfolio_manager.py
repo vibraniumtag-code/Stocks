@@ -1,6 +1,3 @@
-Update this for it 
-
-
 #!/usr/bin/env python3
 """
 portfolio_manager.py  (UPDATED: TURTLE-STYLE PRETTY HTML EMAIL)
