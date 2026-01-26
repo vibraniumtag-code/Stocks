@@ -4,7 +4,6 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Positions</title>
-
 <style>
 :root{
   --bg:#0b1020; --panel:#0f172a; --border:rgba(255,255,255,.08);
@@ -54,13 +53,15 @@ h1{margin:0;font-size:24px}
   display:flex;gap:8px;align-items:center;
   padding:8px 10px;border-radius:12px;
   border:1px solid var(--border);background:rgba(0,0,0,.2);
+  min-width:240px;
 }
-.input input{border:0;outline:none;background:transparent;color:var(--text)}
+.input input{border:0;outline:none;background:transparent;color:var(--text);width:100%}
 .btn{
   padding:9px 12px;border-radius:12px;
   border:1px solid var(--border);
   background:rgba(255,255,255,.06);
   color:var(--text);font-weight:700;cursor:pointer;
+  display:inline-flex;gap:8px;align-items:center;
 }
 .btn.primary{background:rgba(124,58,237,.25);border-color:rgba(124,58,237,.4)}
 .btn.success{background:rgba(34,197,94,.22);border-color:rgba(34,197,94,.4)}
@@ -73,38 +74,51 @@ thead th{
   background:rgba(10,14,28,.95);
   padding:10px;font-size:12px;color:var(--muted);
   border-bottom:1px solid var(--border);
+  text-align:left;
+  user-select:none;
 }
 tbody td{
   padding:9px 10px;font-size:13px;
   border-bottom:1px solid rgba(255,255,255,.06);
+  white-space:nowrap;
 }
-td[contenteditable]{outline:none}
-td[contenteditable]:focus{box-shadow:0 0 0 3px var(--focus)}
-.log,pre.err{
+tbody tr:hover td{background:rgba(255,255,255,.03)}
+td[contenteditable]{outline:none;border-radius:8px}
+td[contenteditable]:focus{box-shadow:0 0 0 3px var(--focus);background:rgba(124,58,237,.08)}
+.log{
   margin-top:12px;padding:10px;border-radius:12px;
   background:rgba(0,0,0,.25);border:1px solid var(--border);
-  font-size:12px;white-space:pre-wrap;
+  font-size:12px;white-space:pre-wrap;display:none;max-height:320px;overflow:auto;
 }
-pre.err{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.3)}
+pre.err{
+  margin-top:12px;padding:10px;border-radius:12px;
+  background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);
+  font-size:12px;white-space:pre-wrap;overflow:auto;
+}
 .overlay{
   position:fixed;inset:0;background:rgba(0,0,0,.6);
   display:none;align-items:center;justify-content:center;
+  padding:18px;
 }
 .modal{
-  width:760px;max-width:95%;
+  width:820px;max-width:95%;
   background:rgba(15,23,42,.95);
   border:1px solid var(--border);
   border-radius:16px;box-shadow:var(--shadow);
+  overflow:hidden;
 }
-.mh,.mf{padding:14px;border-bottom:1px solid var(--border)}
-.mf{border-top:1px solid var(--border);border-bottom:0;text-align:right}
+.mh{padding:14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px}
 .mb{padding:14px;display:grid;gap:12px}
+.mf{padding:14px;border-top:1px solid var(--border);display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 .field{display:grid;gap:6px}
 .field input{
   padding:10px;border-radius:12px;
   border:1px solid var(--border);
   background:rgba(0,0,0,.25);color:var(--text)
 }
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+a{color:#c4b5fd}
+.small{color:var(--muted);font-size:12px}
 </style>
 </head>
 
@@ -112,38 +126,66 @@ pre.err{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.3)}
 <div class="container">
   <h1>Positions</h1>
   <div class="sub">Edit • Download • Commit to GitHub (root CSV)</div>
-  <div class="version">POSITION GUI v2026-01-25-TOKEN-SAVE</div>
+  <div class="version">POSITION GUI v2026-01-25-TOKEN-SAVE-FIX</div>
 
   <div class="panel">
     <div class="toolbar">
       <span class="chip"><span id="dot" class="dot"></span><span id="status">Loading…</span></span>
-      <span class="chip">CSV: <b>positions.csv</b></span>
+      <span class="chip">Load: <b>positions.csv</b></span>
       <div class="spacer"></div>
-      <div class="input">🔎 <input id="filter" placeholder="Filter"></div>
-      <button class="btn" id="addRow">➕</button>
-      <button class="btn" id="download">⬇️</button>
-      <button class="btn primary" id="commit" disabled>Commit</button>
+      <div class="input">🔎 <input id="filter" placeholder="Filter rows…"></div>
+      <button class="btn" id="addRow">➕ Add</button>
+      <button class="btn" id="download">⬇️ Download</button>
+      <button class="btn primary" id="commit" disabled>✅ Commit</button>
+      <button class="btn" id="reset" disabled>↩️ Reset</button>
     </div>
     <div class="tableWrap"><table id="tbl"></table></div>
   </div>
 
-  <div id="log" class="log" style="display:none"></div>
+  <div id="log" class="log"></div>
   <div id="fatal"></div>
 </div>
 
 <!-- Commit Modal -->
 <div class="overlay" id="overlay">
   <div class="modal">
-    <div class="mh"><b>Commit to GitHub</b></div>
-    <div class="mb">
-      <div class="field"><label>Token (saved locally)</label>
-        <input id="token" type="password" autocomplete="current-password">
-        <button class="btn danger" id="clearToken">Clear saved token</button>
+    <div class="mh">
+      <div>
+        <b>Commit to GitHub</b>
+        <div class="small">Writes <b>positions.csv</b> at repo root. Token is stored only in this browser.</div>
       </div>
+      <button class="btn" id="close">✖</button>
     </div>
+
+    <div class="mb">
+      <div class="grid2">
+        <div class="field"><label class="small">Owner</label><input id="owner" value="vibraniumtag-code"></div>
+        <div class="field"><label class="small">Repo</label><input id="repo" value="Stocks"></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label class="small">Branch</label><input id="branch" value="main"></div>
+        <div class="field"><label class="small">Path</label><input id="path" value="positions.csv"></div>
+      </div>
+
+      <div class="field">
+        <label class="small">Commit message</label>
+        <input id="message" value="Update positions.csv (web)">
+      </div>
+
+      <div class="field">
+        <label class="small">Token (fine-grained PAT, Contents: Read & Write)</label>
+        <input id="token" type="password" placeholder="github_pat_..." autocomplete="current-password">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn" id="test">🔍 Test access</button>
+          <button class="btn danger" id="clearToken">🧹 Clear saved token</button>
+        </div>
+      </div>
+
+      <div id="result"></div>
+    </div>
+
     <div class="mf">
-      <button class="btn" id="close">Cancel</button>
-      <button class="btn success" id="commitNow">Commit now</button>
+      <button class="btn success" id="commitNow">✅ Commit now</button>
     </div>
   </div>
 </div>
@@ -151,94 +193,372 @@ pre.err{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.3)}
 <script>
 (() => {
   const csvUrl = 'positions.csv?ts=' + Date.now();
-  const TOKEN_KEY = 'stocks_pat_token_v1';
+  const TOKEN_KEY = 'stocks_pat_token_v2';
 
   const tbl = document.getElementById('tbl');
   const filter = document.getElementById('filter');
   const addRow = document.getElementById('addRow');
   const download = document.getElementById('download');
   const commitBtn = document.getElementById('commit');
+  const resetBtn = document.getElementById('reset');
+
   const overlay = document.getElementById('overlay');
   const closeBtn = document.getElementById('close');
   const commitNow = document.getElementById('commitNow');
+  const testBtn = document.getElementById('test');
+
+  const ownerEl = document.getElementById('owner');
+  const repoEl = document.getElementById('repo');
+  const branchEl = document.getElementById('branch');
+  const pathEl = document.getElementById('path');
+  const msgEl = document.getElementById('message');
   const tokenEl = document.getElementById('token');
-  const clearToken = document.getElementById('clearToken');
+  const clearTokenBtn = document.getElementById('clearToken');
+
   const logEl = document.getElementById('log');
   const fatalEl = document.getElementById('fatal');
   const statusEl = document.getElementById('status');
   const dotEl = document.getElementById('dot');
+  const resultEl = document.getElementById('result');
 
-  let headers=[], data=[], dirty=false;
+  let headers = [];
+  let data = [];
+  let originalData = [];
+  let dirty = false;
+  let sortState = { col: -1, dir: 1 };
 
-  // ---- token persistence ----
+  // ---------- helpers ----------
+  function showLog(text){
+    logEl.style.display = 'block';
+    logEl.textContent += (logEl.textContent ? "\n" : "") + text;
+  }
+  function clearLog(){
+    logEl.textContent = '';
+    logEl.style.display = 'none';
+  }
+  function fatal(msg){
+    const m = (msg && msg.stack) ? msg.stack : String(msg);
+    fatalEl.innerHTML = `<pre class="err">${m}</pre>`;
+  }
+  function setStatus(kind, text){
+    statusEl.textContent = text;
+    dotEl.className = 'dot ' + (kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : '');
+  }
+  function setResult(html){ resultEl.innerHTML = html; }
+  function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  function deepCopy(x){ return JSON.parse(JSON.stringify(x)); }
+
+  window.addEventListener('error', (e) => fatal(e.error || e.message));
+  window.addEventListener('unhandledrejection', (e) => { fatal(e.reason); try{e.preventDefault()}catch{} });
+
+  // ---------- token persistence ----------
   try {
     const saved = localStorage.getItem(TOKEN_KEY);
     if (saved) tokenEl.value = saved;
   } catch {}
   tokenEl.addEventListener('input', () => {
     try {
-      if (tokenEl.value.trim()) localStorage.setItem(TOKEN_KEY, tokenEl.value.trim());
+      const v = tokenEl.value.trim();
+      if (v) localStorage.setItem(TOKEN_KEY, v);
+      else localStorage.removeItem(TOKEN_KEY);
     } catch {}
   });
-  clearToken.onclick = () => {
-    localStorage.removeItem(TOKEN_KEY);
+  clearTokenBtn.onclick = () => {
+    try{ localStorage.removeItem(TOKEN_KEY); }catch{}
     tokenEl.value = '';
-    alert('Token cleared from this browser');
+    alert('Token cleared from this browser.');
   };
 
-  function fatal(msg){ fatalEl.innerHTML = `<pre class="err">${msg}</pre>`; }
-  window.addEventListener('unhandledrejection', e => fatal(e.reason));
-  window.addEventListener('error', e => fatal(e.message));
+  // ---------- CSV ----------
+  function parseCSV(text){
+    const rows = [];
+    let row = [], cur = '', inQuotes = false;
+    for (let i=0; i<text.length; i++){
+      const c = text[i], n = text[i+1];
+      if (c === '"' && inQuotes && n === '"'){ cur += '"'; i++; continue; }
+      if (c === '"'){ inQuotes = !inQuotes; continue; }
+      if (!inQuotes && (c === ',' || c === '\n' || c === '\r')){
+        row.push(cur); cur = '';
+        if (c === '\n'){
+          if (row.some(v => v.trim() !== '')) rows.push(row);
+          row = [];
+        }
+        continue;
+      }
+      cur += c;
+    }
+    if (cur.length || row.length){ row.push(cur); rows.push(row); }
+    return rows;
+  }
+  function csvEscape(s){
+    s = (s ?? '').toString();
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g,'""')}"`;
+    return s;
+  }
+  function toCSV(headers, rows){
+    const lines = [];
+    lines.push(headers.map(csvEscape).join(','));
+    for (const r of rows){
+      lines.push(headers.map((_, i) => csvEscape(r[i] ?? '')).join(','));
+    }
+    return lines.join('\n') + '\n';
+  }
+
+  // Safari-safe base64
+  function b64encodeUTF8(str){
+    const bytes = new TextEncoder().encode(str);
+    let binary = '';
+    for (let i=0; i<bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+
+  // ---------- table ----------
+  function markDirty(){
+    dirty = true;
+    commitBtn.disabled = false;
+    resetBtn.disabled = false;
+  }
+
+  function sortBy(colIdx, dir){
+    data.sort((a,b) => {
+      const av = (a[colIdx] ?? '').toString();
+      const bv = (b[colIdx] ?? '').toString();
+      return av.localeCompare(bv, undefined, { numeric:true, sensitivity:'base' }) * dir;
+    });
+  }
 
   function render(){
-    let html='<thead><tr>';
-    headers.forEach(h=>html+=`<th>${h}</th>`); html+='</tr></thead><tbody>';
-    data.forEach((r,i)=>{
-      html+='<tr>'+r.map((c,j)=>`<td contenteditable oninput="window._edit(${i},${j},this)">${c}</td>`).join('')+'</tr>';
+    const q = filter.value.toLowerCase().trim();
+    const visible = [];
+    data.forEach((r, idx) => {
+      const txt = r.join(' ').toLowerCase();
+      if (!q || txt.includes(q)) visible.push(idx);
     });
-    tbl.innerHTML=html+'</tbody>';
+
+    const thead = document.createElement('thead');
+    const trh = document.createElement('tr');
+
+    headers.forEach((h, colIdx) => {
+      const th = document.createElement('th');
+      const arrow = (sortState.col === colIdx) ? (sortState.dir === 1 ? ' ▲' : ' ▼') : '';
+      th.textContent = h + arrow;
+      th.addEventListener('click', () => {
+        if (sortState.col === colIdx) sortState.dir *= -1;
+        else { sortState.col = colIdx; sortState.dir = 1; }
+        sortBy(colIdx, sortState.dir);
+        render();
+      });
+      trh.appendChild(th);
+    });
+    thead.appendChild(trh);
+
+    const tbody = document.createElement('tbody');
+    visible.forEach((rowIdx) => {
+      const tr = document.createElement('tr');
+      headers.forEach((_, colIdx) => {
+        const td = document.createElement('td');
+        td.contentEditable = "true";
+        td.spellcheck = false;
+        td.textContent = (data[rowIdx][colIdx] ?? '').toString();
+        td.addEventListener('input', () => {
+          data[rowIdx][colIdx] = td.textContent;
+          markDirty();
+        });
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+
+    tbl.innerHTML = '';
+    tbl.appendChild(thead);
+    tbl.appendChild(tbody);
   }
-  window._edit=(i,j,el)=>{data[i][j]=el.textContent;dirty=true;commitBtn.disabled=false};
 
-  fetch(csvUrl).then(r=>r.text()).then(t=>{
-    const rows=t.trim().split('\n').map(l=>l.split(','));
-    headers=rows.shift(); data=rows;
-    statusEl.textContent='Loaded'; dotEl.className='dot ok';
+  // ---------- GitHub API ----------
+  function apiHeaders(token){
+    return {
+      'Accept': 'application/vnd.github+json',
+      'Authorization': `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28'
+    };
+  }
+  const ghPath = (p) => encodeURIComponent(p).replace(/%2F/g,'/');
+
+  async function ghGetFile({owner, repo, path, branch, token}){
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}?ref=${encodeURIComponent(branch)}`;
+    const res = await fetch(url, { headers: apiHeaders(token) });
+    const raw = await res.text();
+    let json = {};
+    try { json = JSON.parse(raw); } catch {}
+    return { url, res, raw, json };
+  }
+
+  async function ghPutFile({owner, repo, path, branch, token, message, contentBase64, sha}){
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${ghPath(path)}`;
+    const body = { message, content: contentBase64, branch };
+    if (sha) body.sha = sha;
+
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { ...apiHeaders(token), 'Content-Type':'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    const raw = await res.text();
+    let json = {};
+    try { json = JSON.parse(raw); } catch {}
+
+    if (!res.ok){
+      throw new Error(`PUT failed (${res.status}): ${json.message || raw}`);
+    }
+    return json;
+  }
+
+  // ---------- UI events ----------
+  filter.addEventListener('input', render);
+
+  addRow.addEventListener('click', () => {
+    data.unshift(headers.map(() => ''));
+    markDirty();
     render();
-  }).catch(e=>fatal(e));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
 
-  download.onclick=()=>{
-    const csv=[headers,...data].map(r=>r.join(',')).join('\n');
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([csv]));
-    a.download='positions.csv'; a.click();
-  };
+  download.addEventListener('click', () => {
+    const csv = toCSV(headers, data);
+    const blob = new Blob([csv], { type:'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'positions.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
 
-  commitBtn.onclick=()=>overlay.style.display='flex';
-  closeBtn.onclick=()=>overlay.style.display='none';
+  resetBtn.addEventListener('click', () => {
+    data = deepCopy(originalData);
+    dirty = false;
+    commitBtn.disabled = true;
+    resetBtn.disabled = true;
+    sortState = { col:-1, dir:1 };
+    render();
+  });
 
-  commitNow.onclick=async()=>{
+  commitBtn.addEventListener('click', () => {
+    clearLog();
+    setResult('');
+    overlay.style.display = 'flex';
+  });
+
+  closeBtn.addEventListener('click', () => overlay.style.display = 'none');
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.style.display = 'none'; });
+
+  testBtn.addEventListener('click', async () => {
     try{
-      const token=tokenEl.value.trim();
-      if(!token) throw 'Token required';
-      const csv=[headers,...data].map(r=>r.join(',')).join('\n');
-      const b64=btoa(unescape(encodeURIComponent(csv)));
-      const r1=await fetch('https://api.github.com/repos/vibraniumtag-code/Stocks/contents/positions.csv',{
-        headers:{Authorization:`Bearer ${token}`}
+      clearLog(); setResult('');
+      const owner = ownerEl.value.trim();
+      const repo = repoEl.value.trim();
+      const branch = branchEl.value.trim() || 'main';
+      const path = pathEl.value.trim() || 'positions.csv';
+      const token = tokenEl.value.trim();
+      if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
+
+      showLog(`TEST → ${owner}/${repo} ref=${branch} path=${path}`);
+      const info = await ghGetFile({owner, repo, path, branch, token});
+      showLog(`GET URL: ${info.url}`);
+      showLog(`GET ← HTTP ${info.res.status}`);
+
+      if (!info.res.ok && info.res.status !== 404){
+        throw new Error(`Test failed (${info.res.status}): ${info.json.message || info.raw}`);
+      }
+
+      const sha = (info.res.status === 404) ? '(new file)' : (info.json.sha ? info.json.sha.slice(0,7) : '(no sha)');
+      setResult(`<div class="chip"><span class="dot ok"></span> Access OK • SHA: <b>${esc(sha)}</b></div>`);
+    }catch(e){
+      fatal(e);
+      showLog(`ERROR: ${e.message || String(e)}`);
+    }
+  });
+
+  commitNow.addEventListener('click', async () => {
+    try{
+      clearLog(); setResult('');
+      const owner = ownerEl.value.trim();
+      const repo = repoEl.value.trim();
+      const branch = branchEl.value.trim() || 'main';
+      const path = pathEl.value.trim() || 'positions.csv';
+      const message = msgEl.value.trim() || 'Update positions.csv (web)';
+      const token = tokenEl.value.trim();
+      if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
+
+      showLog(`COMMIT → ${owner}/${repo} branch=${branch} path=${path}`);
+
+      // 1) Read current SHA
+      const info = await ghGetFile({owner, repo, path, branch, token});
+      showLog(`GET ← HTTP ${info.res.status}`);
+      if (!info.res.ok && info.res.status !== 404){
+        throw new Error(`Cannot read file (${info.res.status}): ${info.json.message || info.raw}`);
+      }
+      const sha = (info.res.status === 404) ? null : (info.json.sha || null);
+
+      // 2) Build CSV and put
+      const csv = toCSV(headers, data);
+      const contentBase64 = b64encodeUTF8(csv);
+
+      const out = await ghPutFile({owner, repo, path, branch, token, message, contentBase64, sha});
+      const commitUrl = out?.commit?.html_url || '';
+      const fileUrl = out?.content?.html_url || '';
+
+      // mark clean
+      originalData = deepCopy(data);
+      dirty = false;
+      commitBtn.disabled = true;
+      resetBtn.disabled = true;
+
+      showLog('PUT ← OK');
+      setResult(`
+        <div class="chip"><span class="dot ok"></span> Committed</div>
+        <div class="small" style="margin-top:8px;">
+          ${commitUrl ? `Commit: <a href="${commitUrl}" target="_blank" rel="noreferrer">open</a><br>` : ''}
+          ${fileUrl ? `File: <a href="${fileUrl}" target="_blank" rel="noreferrer">open</a>` : ''}
+        </div>
+      `);
+      overlay.style.display = 'none';
+      alert('Committed ✅ (open the commit link in the log/result to verify)');
+    }catch(e){
+      fatal(e);
+      showLog(`ERROR: ${e.message || String(e)}`);
+    }
+  });
+
+  // ---------- load CSV ----------
+  (async () => {
+    try{
+      setStatus('warn','Loading…');
+      const res = await fetch(csvUrl, { cache:'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status} while fetching positions.csv`);
+      const text = await res.text();
+
+      const rows = parseCSV(text);
+      if (!rows.length) throw new Error('CSV is empty.');
+
+      headers = rows[0].map(x => x.trim());
+      data = rows.slice(1).map(r => {
+        const rr = r.slice(0, headers.length);
+        while (rr.length < headers.length) rr.push('');
+        return rr;
       });
-      const j=await r1.json();
-      await fetch('https://api.github.com/repos/vibraniumtag-code/Stocks/contents/positions.csv',{
-        method:'PUT',
-        headers:{
-          Authorization:`Bearer ${token}`,
-          'Content-Type':'application/json'
-        },
-        body:JSON.stringify({message:'Update positions.csv (web)',content:b64,sha:j.sha})
-      });
-      alert('Committed');
-      dirty=false; commitBtn.disabled=true; overlay.style.display='none';
-    }catch(e){fatal(e)}
-  };
+      originalData = deepCopy(data);
+
+      setStatus('ok','Loaded');
+      render();
+    }catch(e){
+      setStatus('bad','Load failed');
+      fatal(e);
+    }
+  })();
 })();
 </script>
 </body>
