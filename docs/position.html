@@ -125,9 +125,23 @@ a{color:#c4b5fd}
 <body>
 <div class="container">
   <h1>Positions</h1>
-  <div class="sub">Edit • Download • Commit to GitHub (root CSV)</div>
-  <div class="version">POSITION GUI v2026-01-25-TOKEN-SAVE-FIX</div>
+  <div class="sub">Edit • Download • Commit to GitHub (root CSV) + commit cash to docs/cash.txt</div>
+  <div class="version">POSITION GUI v2026-01-26-CASH-TXT</div>
 
+  <!-- CASH PANEL -->
+  <div class="panel">
+    <div class="toolbar">
+      <span class="chip"><span id="cashDot" class="dot"></span><span id="cashStatus">Cash: loading…</span></span>
+      <span class="chip">File: <b>docs/cash.txt</b></span>
+      <div class="spacer"></div>
+      <div class="input" style="min-width:320px;">💵
+        <input id="cashInput" inputmode="decimal" placeholder="Enter free cash (e.g., 12345.67)">
+      </div>
+      <button class="btn success" id="commitCash" disabled>✅ Commit Cash</button>
+    </div>
+  </div>
+
+  <!-- POSITIONS PANEL -->
   <div class="panel">
     <div class="toolbar">
       <span class="chip"><span id="dot" class="dot"></span><span id="status">Loading…</span></span>
@@ -195,12 +209,21 @@ a{color:#c4b5fd}
   const csvUrl = 'positions.csv?ts=' + Date.now();
   const TOKEN_KEY = 'stocks_pat_token_v2';
 
+  // NEW: cash file path
+  const CASH_PATH = 'docs/cash.txt';
+
   const tbl = document.getElementById('tbl');
   const filter = document.getElementById('filter');
   const addRow = document.getElementById('addRow');
   const download = document.getElementById('download');
   const commitBtn = document.getElementById('commit');
   const resetBtn = document.getElementById('reset');
+
+  // cash UI
+  const cashInput = document.getElementById('cashInput');
+  const commitCashBtn = document.getElementById('commitCash');
+  const cashStatusEl = document.getElementById('cashStatus');
+  const cashDotEl = document.getElementById('cashDot');
 
   const overlay = document.getElementById('overlay');
   const closeBtn = document.getElementById('close');
@@ -227,6 +250,10 @@ a{color:#c4b5fd}
   let dirty = false;
   let sortState = { col: -1, dir: 1 };
 
+  // cash state
+  let cashOriginal = '';
+  let cashDirty = false;
+
   // ---------- helpers ----------
   function showLog(text){
     logEl.style.display = 'block';
@@ -243,6 +270,10 @@ a{color:#c4b5fd}
   function setStatus(kind, text){
     statusEl.textContent = text;
     dotEl.className = 'dot ' + (kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : '');
+  }
+  function setCashStatus(kind, text){
+    cashStatusEl.textContent = text;
+    cashDotEl.className = 'dot ' + (kind === 'ok' ? 'ok' : kind === 'bad' ? 'bad' : '');
   }
   function setResult(html){ resultEl.innerHTML = html; }
   function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -310,6 +341,13 @@ a{color:#c4b5fd}
     let binary = '';
     for (let i=0; i<bytes.length; i++) binary += String.fromCharCode(bytes[i]);
     return btoa(binary);
+  }
+  // Decode base64 (utf-8) from GitHub API content
+  function b64decodeUTF8(b64){
+    const binary = atob(b64.replace(/\s/g,''));
+    const bytes = new Uint8Array(binary.length);
+    for (let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
   }
 
   // ---------- table ----------
@@ -414,6 +452,154 @@ a{color:#c4b5fd}
     return json;
   }
 
+  // ---------- CASH logic ----------
+  function normalizeCashInput(v){
+    // allow commas/spaces, keep digits, dot, minus
+    const s = String(v ?? '').trim().replace(/,/g,'');
+    if (!s) return '';
+    if (!/^-?\d+(\.\d+)?$/.test(s)) return null; // invalid
+    // keep as-is but trim extra zeros? not necessary; just return parsed -> string
+    const n = Number(s);
+    if (!Number.isFinite(n)) return null;
+    return String(n);
+  }
+
+  function markCashDirty(){
+    cashDirty = true;
+    commitCashBtn.disabled = false;
+    setCashStatus('warn', 'Cash: modified (not committed)');
+  }
+
+  cashInput.addEventListener('input', () => {
+    // live validate
+    const n = normalizeCashInput(cashInput.value);
+    if (n === null){
+      commitCashBtn.disabled = true;
+      setCashStatus('bad', 'Cash: invalid number');
+      cashDirty = true; // still dirty, but can't commit
+      return;
+    }
+    if (n === cashOriginal){
+      cashDirty = false;
+      commitCashBtn.disabled = true;
+      setCashStatus('ok', 'Cash: up to date');
+      return;
+    }
+    if (n === '') {
+      // allow empty but treat as dirty (will write empty file)
+      markCashDirty();
+      return;
+    }
+    markCashDirty();
+  });
+
+  commitCashBtn.addEventListener('click', async () => {
+    try{
+      clearLog(); setResult('');
+      const owner = ownerEl.value.trim();
+      const repo = repoEl.value.trim();
+      const branch = branchEl.value.trim() || 'main';
+      const token = tokenEl.value.trim();
+      if (!owner || !repo || !token) throw new Error('Owner, repo, and token are required.');
+
+      const normalized = normalizeCashInput(cashInput.value);
+      if (normalized === null) throw new Error('Cash value is not a valid number.');
+      const contentText = (normalized === '' ? '' : normalized) + '\n';
+
+      setCashStatus('warn', 'Cash: committing…');
+      showLog(`CASH COMMIT → ${owner}/${repo} branch=${branch} path=${CASH_PATH}`);
+
+      // read SHA (file may not exist)
+      const info = await ghGetFile({owner, repo, path: CASH_PATH, branch, token});
+      showLog(`CASH GET ← HTTP ${info.res.status}`);
+      if (!info.res.ok && info.res.status !== 404){
+        throw new Error(`Cannot read cash file (${info.res.status}): ${info.json.message || info.raw}`);
+      }
+      const sha = (info.res.status === 404) ? null : (info.json.sha || null);
+
+      const contentBase64 = b64encodeUTF8(contentText);
+      const out = await ghPutFile({
+        owner, repo, path: CASH_PATH, branch, token,
+        message: `Update cash.txt (web): ${normalized === '' ? 'empty' : normalized}`,
+        contentBase64, sha
+      });
+
+      const commitUrl = out?.commit?.html_url || '';
+      const fileUrl = out?.content?.html_url || '';
+
+      cashOriginal = normalized;
+      cashDirty = false;
+      commitCashBtn.disabled = true;
+      setCashStatus('ok', 'Cash: committed ✅');
+
+      showLog('CASH PUT ← OK');
+      setResult(`
+        <div class="chip"><span class="dot ok"></span> Cash committed</div>
+        <div class="small" style="margin-top:8px;">
+          ${commitUrl ? `Commit: <a href="${commitUrl}" target="_blank" rel="noreferrer">open</a><br>` : ''}
+          ${fileUrl ? `File: <a href="${fileUrl}" target="_blank" rel="noreferrer">open</a>` : ''}
+        </div>
+      `);
+      alert('Cash committed ✅');
+    }catch(e){
+      setCashStatus('bad','Cash: commit failed');
+      fatal(e);
+      showLog(`ERROR: ${e.message || String(e)}`);
+    }
+  });
+
+  async function loadCash(){
+    try{
+      setCashStatus('warn','Cash: loading…');
+      const owner = ownerEl.value.trim();
+      const repo = repoEl.value.trim();
+      const branch = branchEl.value.trim() || 'main';
+      const token = tokenEl.value.trim();
+
+      // If no token yet, we can still show "ready" and let user load later by clicking commit/test.
+      if (!owner || !repo){
+        setCashStatus('warn','Cash: set repo settings');
+        return;
+      }
+      if (!token){
+        setCashStatus('warn','Cash: token needed to load');
+        return;
+      }
+
+      const info = await ghGetFile({owner, repo, path: CASH_PATH, branch, token});
+      if (info.res.status === 404){
+        cashOriginal = '';
+        cashInput.value = '';
+        cashDirty = false;
+        commitCashBtn.disabled = true;
+        setCashStatus('ok','Cash: file not found (will create on commit)');
+        return;
+      }
+      if (!info.res.ok){
+        throw new Error(`Cash load failed (${info.res.status}): ${info.json.message || info.raw}`);
+      }
+      const decoded = b64decodeUTF8(info.json.content || '').trim();
+      const normalized = normalizeCashInput(decoded);
+      // If the file has weird content, keep it but show warning
+      if (normalized === null && decoded !== ''){
+        cashOriginal = decoded;
+        cashInput.value = decoded;
+        setCashStatus('warn','Cash: loaded (non-numeric content)');
+        commitCashBtn.disabled = true;
+        return;
+      }
+      cashOriginal = (normalized === null ? '' : normalized);
+      cashInput.value = cashOriginal;
+      cashDirty = false;
+      commitCashBtn.disabled = true;
+      setCashStatus('ok','Cash: loaded');
+    }catch(e){
+      setCashStatus('bad','Cash: load failed');
+      // don’t fatal the whole page for cash load
+      showLog(`CASH LOAD ERROR: ${e.message || String(e)}`);
+    }
+  }
+
   // ---------- UI events ----------
   filter.addEventListener('input', render);
 
@@ -476,6 +662,9 @@ a{color:#c4b5fd}
 
       const sha = (info.res.status === 404) ? '(new file)' : (info.json.sha ? info.json.sha.slice(0,7) : '(no sha)');
       setResult(`<div class="chip"><span class="dot ok"></span> Access OK • SHA: <b>${esc(sha)}</b></div>`);
+
+      // NEW: try load cash once token is confirmed
+      await loadCash();
     }catch(e){
       fatal(e);
       showLog(`ERROR: ${e.message || String(e)}`);
@@ -554,6 +743,9 @@ a{color:#c4b5fd}
 
       setStatus('ok','Loaded');
       render();
+
+      // try load cash if token already saved
+      await loadCash();
     }catch(e){
       setStatus('bad','Load failed');
       fatal(e);
