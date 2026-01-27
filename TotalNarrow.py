@@ -446,7 +446,7 @@ def compute_news_overlay(ticker: str) -> Dict[str, object]:
     ticker_titles = fetch_headlines_alpha_vantage_ticker(ticker, NEWS_LOOKBACK_DAYS, NEWS_MAX_HEADLINES)
     if not ticker_titles:
         # make GDELT query robust: prefer $TICKER or company mentions
-        ticker_titles = fetch_headlines_gdelt(f"{ticker} stock OR {ticker} shares OR {ticker}", NEWS_LOOKBACK_DAYS, NEWS_MAX_HEADLINES)
+        ticker_titles = fetch_headlines_gdelt(f"(${ticker} OR {ticker}) AND (stock OR shares OR earnings OR guidance OR outlook)", NEWS_LOOKBACK_DAYS, NEWS_MAX_HEADLINES)
 
     # --- Industry headlines: use industry first, else sector ---
     industry_query = ""
