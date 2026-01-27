@@ -1,38 +1,14 @@
 #!/usr/bin/env python3
 """
-portfolio_manager.py  (FULL — Turtle-style pretty HTML email + exits/trims + pyramiding + scanner + vol-adjusted buys + CASH FILE)
+portfolio_manager.py  (FULL — Exits/Trims + Pyramiding + Scanner + Vol-adjusted Buys + CASH FILE + NEWS bias)
 
-✅ positions.csv schema (yours):
-  required: ticker, option_name, option_entry_price, underlying_entry_price
-  optional: contracts (defaults to 1)
+Key points:
+- Portfolio manager does NOT fetch news.
+- It consumes news columns produced by TotalNarrow:
+  NewsScore (-1..+1), GeoRisk (0..1), Sector, Industry
+- NEWS MODE = bias (directional sizing tilt, NOT hard gate)
 
-✅ Cash sources for NEW BUYS:
-  - freed_cash: proceeds from planned sells (computed)
-  - account_cash: read from CASH_FILE (default docs/cash.txt)
-  - cash_reserve: keep this amount unspent (CASH_RESERVE)
-
-Buying power:
-  buying_power = freed_cash + max(0, account_cash - cash_reserve)
-
-✅ New buys allocation:
-  - Uses candidates from TotalNarrow scanner
-  - Estimates option cost per contract from scanner row (OptionLast/etc) * 100
-  - Computes ATR% per ticker (ATR / price) from completed daily bars
-  - Allocates buying power by weights = 1 / ATR% (more to lower-vol names)
-  - Caps by MAX_NEW_PER_RUN and MAX_CONTRACTS_PER_POSITION
-  - Trims contracts if rounding overspends buying power
-
-Env vars (optional):
-  CASH_FILE=docs/cash.txt
-  CASH_RESERVE=0
-  MAX_NEW_PER_RUN, MAX_CONTRACTS_PER_POSITION, CONTRACT_MULTIPLIER, CASH_BUFFER_PCT,
-  ATR_PERIOD, ATR_MULTIPLIER, STRUCTURE_10, STRUCTURE_5, RECO_MODE,
-  ATR_VERY_CLOSE, ATR_CLOSE, OVERSIZE_MULT, TRIM_TO_SLOT,
-  PYRAMID_ON, PYR_L1, PYR_L2, PYR_ADD_BUDGET_PCT, PYR_REQUIRE_BOTH, PYR_MAX_ADDS_PER_RUN,
-  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO, EMAIL_MODE
-
-EMAIL_MODE:
-  always | action_only
+If news columns are missing → script still works (no bias applied).
 """
 
 import os
@@ -42,7 +18,7 @@ import smtplib
 import io
 import contextlib
 from datetime import datetime
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 import numpy as np
 import pandas as pd
@@ -52,9 +28,9 @@ from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 
 
-# =========================
-# SAFE ENV PARSERS
-# =========================
+# ============================================================
+# SAFE ENV PARSERS  (MUST COME FIRST)
+# ============================================================
 def env_str(name: str, default: str = "") -> str:
     v = os.getenv(name)
     if v is None:
@@ -80,6 +56,25 @@ def env_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
+
+# ============================================================
+# NEWS CONFIG  (BIAS MODE)
+# ============================================================
+SHOW_NEWS_IN_EMAIL = env_str("SHOW_NEWS_IN_EMAIL", "true").lower() == "true"
+MANAGER_NEWS_MODE  = env_str("MANAGER_NEWS_MODE", "bias").lower()  # annotate | bias
+
+NEWS_LONG_MIN   = env_float("NEWS_LONG_MIN", 0.05)
+NEWS_SHORT_MAX  = env_float("NEWS_SHORT_MAX", -0.05)
+MANAGER_GEO_RISK_MAX = env_float("MANAGER_GEO_RISK_MAX", 0.40)
+
+NEWS_BIAS_ALPHA     = env_float("NEWS_BIAS_ALPHA", 0.80)
+NEWS_BIAS_CLIP_MIN  = env_float("NEWS_BIAS_CLIP_MIN", 0.50)
+NEWS_BIAS_CLIP_MAX  = env_float("NEWS_BIAS_CLIP_MAX", 1.50)
+
+
+# ============================================================
+# GENERAL HELPERS
+# ============================================================
 def to_float(x) -> Optional[float]:
     try:
         v = float(x)
@@ -121,12 +116,10 @@ def num(x, n=2) -> str:
         return f"{v:.{n}f}"
     except Exception:
         return ""
-
-
-# =========================
+# ============================================================
 # CONFIG
-# =========================
-CSV_FILE = env_str("CSV_FILE", "positions.csv")
+# ============================================================
+CSV_FILE  = env_str("CSV_FILE", "positions.csv")
 PLAN_FILE = env_str("PLAN_FILE", "portfolio_plan.csv")
 
 DOCS_DIR = env_str("DOCS_DIR", "docs")
@@ -141,321 +134,99 @@ CASH_BUFFER_PCT = env_float("CASH_BUFFER_PCT", 0.05)
 ATR_PERIOD = env_int("ATR_PERIOD", 14)
 ATR_MULTIPLIER = env_float("ATR_MULTIPLIER", 1.5)
 STRUCTURE_10 = env_int("STRUCTURE_10", 10)
-STRUCTURE_5 = env_int("STRUCTURE_5", 5)
-RECO_MODE = env_str("RECO_MODE", "current").lower()  # current | close (current used below)
+STRUCTURE_5  = env_int("STRUCTURE_5", 5)
 
 ATR_VERY_CLOSE = env_float("ATR_VERY_CLOSE", 0.25)
-ATR_CLOSE = env_float("ATR_CLOSE", 0.50)
+ATR_CLOSE      = env_float("ATR_CLOSE", 0.50)
 
 OVERSIZE_MULT = env_float("OVERSIZE_MULT", 1.40)
-TRIM_TO_SLOT = env_str("TRIM_TO_SLOT", "true").lower() == "true"
+TRIM_TO_SLOT  = env_str("TRIM_TO_SLOT", "true").lower() == "true"
 
-# Cash file (NEW)
-CASH_FILE = env_str("CASH_FILE", "docs/cash.txt")
+# Cash
+CASH_FILE    = env_str("CASH_FILE", "docs/cash.txt")
 CASH_RESERVE = env_float("CASH_RESERVE", 0.0)
 
-# Pyramiding config
+# Pyramiding
 PYRAMID_ON = env_str("PYRAMID_ON", "true").lower() == "true"
-PYR_L1 = env_float("PYR_L1", 0.60)   # +60% option return
-PYR_L2 = env_float("PYR_L2", 1.20)   # +120% option return
-PYR_ADD_BUDGET_PCT = env_float("PYR_ADD_BUDGET_PCT", 0.05)  # 5% of total value/run
-PYR_REQUIRE_BOTH = env_str("PYR_REQUIRE_BOTH", "true").lower() == "true"
+PYR_L1 = env_float("PYR_L1", 0.60)
+PYR_L2 = env_float("PYR_L2", 1.20)
+PYR_ADD_BUDGET_PCT = env_float("PYR_ADD_BUDGET_PCT", 0.05)
+PYR_REQUIRE_BOTH   = env_str("PYR_REQUIRE_BOTH", "true").lower() == "true"
 PYR_MAX_ADDS_PER_RUN = env_int("PYR_MAX_ADDS_PER_RUN", 99)
 
-# Email env
+# Email
 SMTP_HOST = env_str("SMTP_HOST", "")
 SMTP_PORT = env_int("SMTP_PORT", 0)
 SMTP_USER = env_str("SMTP_USER", "")
 SMTP_PASS = env_str("SMTP_PASS", "")
-EMAIL_TO = env_str("EMAIL_TO", "")
-EMAIL_MODE = env_str("EMAIL_MODE", "always").lower()  # always | action_only
+EMAIL_TO  = env_str("EMAIL_TO", "")
+EMAIL_MODE = env_str("EMAIL_MODE", "always").lower()
 
 
-# =========================
+# ============================================================
 # CASH FILE
-# =========================
+# ============================================================
 def read_account_cash_from_file(path: str) -> float:
-    """
-    Reads a cash balance from a plain text file.
-    Expected content: a single number, e.g. 12500.50
-    Returns 0.0 if missing/unreadable.
-    """
     try:
-        if not path:
+        if not path or not os.path.exists(path):
             return 0.0
-        if not os.path.exists(path):
-            return 0.0
-        with open(path, "r", encoding="utf-8") as f:
-            raw = (f.read() or "").strip()
-        if raw == "":
-            return 0.0
-        # allow commas
-        raw = raw.replace(",", "")
-        return float(raw)
+        raw = open(path, "r", encoding="utf-8").read().strip().replace(",", "")
+        return float(raw) if raw else 0.0
     except Exception:
         return 0.0
 
 
-# =========================
-# EMAIL (HTML-ONLY like Turtle)
-# =========================
+# ============================================================
+# EMAIL
+# ============================================================
 def smtp_ready() -> bool:
     return all([SMTP_HOST, SMTP_PORT > 0, SMTP_USER, SMTP_PASS, EMAIL_TO])
 
 def send_pretty_email(subject: str, html_body: str) -> None:
-    """
-    HTML-ONLY email to prevent clients from preferring text/plain.
-    """
     msg = MIMEText(html_body, "html", "utf-8")
     msg["Subject"] = subject
     msg["To"] = EMAIL_TO
     msg["From"] = f"Portfolio Manager <{SMTP_USER}>"
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid()
-    msg.replace_header("Content-Type", 'text/html; charset="utf-8"')
 
+    ctx = ssl.create_default_context()
     if SMTP_PORT == 465:
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as server:
-            server.login(SMTP_USER, SMTP_PASS)
-            server.send_message(msg)
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as s:
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
     else:
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls(context=ctx)
-            server.ehlo()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.send_message(msg)
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
+            s.starttls(context=ctx)
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
 
 
-# =========================
-# PRETTY HTML HELPERS
-# =========================
+# ============================================================
+# HTML HELPERS (email-safe)
+# ============================================================
 def html_escape(s: str) -> str:
-    return ("" if s is None else str(s)).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return ("" if s is None else str(s))\
+        .replace("&", "&amp;")\
+        .replace("<", "&lt;")\
+        .replace(">", "&gt;")
 
-def _badge(text: str, kind: str = "neutral") -> str:
-    t = (text or "").strip()
-    if t == "":
-        return ""
-    styles = {
-        "good":   "background:#ecfdf5;color:#065f46;border:1px solid #d1fae5;",
-        "warn":   "background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;",
-        "bad":    "background:#fef2f2;color:#991b1b;border:1px solid #fecaca;",
-        "info":   "background:#eef2ff;color:#3730a3;border:1px solid #e0e7ff;",
-        "neutral":"background:#f3f4f6;color:#374151;border:1px solid #e5e7eb;",
-    }
-    st = styles.get(kind, styles["neutral"])
-    return f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;font-weight:800;font-size:11px;{st}white-space:nowrap;'>{html_escape(t)}</span>"
+def badge(text: str, bg: str, fg: str) -> str:
+    return (
+        f"<span style='padding:2px 8px;border-radius:999px;"
+        f"background:{bg};color:{fg};font-weight:800;font-size:11px;'>"
+        f"{html_escape(text)}</span>"
+    )
 
-def _badge_for_type(t: str) -> str:
+def badge_type(t: str) -> str:
     u = (t or "").upper()
-    if u == "SELL":
-        return _badge("SELL", "bad")
-    if u == "BUY":
-        return _badge("BUY", "info")
-    if u == "ADD":
-        return _badge("ADD", "good")
-    if u == "HOLD":
-        return _badge("HOLD", "neutral")
-    return _badge(u, "neutral")
-
-def _badge_for_reco(r: str) -> str:
-    u = (r or "").upper()
-    if u.startswith("SELL"):
-        return _badge(u, "bad")
-    if u.startswith("ADD"):
-        return _badge(u, "good")
-    if u in ("HOLD", "NO_ACTION", "NO POSITION", "NO_POSITION"):
-        return _badge(u, "neutral")
-    return _badge(u, "neutral")
-
-def df_to_pretty_table(df: pd.DataFrame, title: str, badge_cols: Optional[Dict[str, str]] = None) -> str:
-    """
-    Email-safe scrollable table with inline styles.
-    badge_cols: dict col->("type"|"reco"|"neutral") for special rendering.
-    """
-    badge_cols = badge_cols or {}
-
-    if df is None or df.empty:
-        return f"""
-        <div style="margin:0 0 16px 0;">
-          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">{html_escape(title)}</div>
-          <div style="padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px;background:#f9fafb;font-size:13px;">
-            ✅ No rows.
-          </div>
-        </div>
-        """
-
-    safe = df.copy().fillna("")
-    safe = safe.astype(object)
-
-    cols = list(safe.columns)
-
-    head = "".join([
-        f"<th style='text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;'>{html_escape(c)}</th>"
-        for c in cols
-    ])
-
-    numeric_hint = set()
-    for c in cols:
-        lc = c.lower()
-        if any(k in lc for k in ["value", "mark", "cost", "contracts", "price", "pct", "return", "dist", "atr", "iv", "delta"]):
-            numeric_hint.add(c)
-
-    rows_html = []
-    for i in range(len(safe)):
-        r = safe.iloc[i]
-        tds = []
-        for c in cols:
-            val = r[c]
-            sval = "" if val is None else str(val)
-
-            if c in badge_cols:
-                mode = badge_cols[c]
-                if mode == "type":
-                    cell = _badge_for_type(sval)
-                    align = "center"
-                elif mode == "reco":
-                    cell = _badge_for_reco(sval)
-                    align = "center"
-                else:
-                    cell = _badge(sval, "neutral")
-                    align = "center"
-            else:
-                cell = html_escape(sval)
-                align = "right" if c in numeric_hint else "left"
-
-            bg = "#ffffff" if (i % 2 == 0) else "#fcfcfd"
-            tds.append(
-                f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;"
-                f"white-space:nowrap;text-align:{align};font-variant-numeric:tabular-nums;background:{bg};'>{cell}</td>"
-            )
-        rows_html.append("<tr>" + "".join(tds) + "</tr>")
-
-    return f"""
-    <div style="margin:0 0 16px 0;">
-      <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">{html_escape(title)}</div>
-      <div style="border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
-        <div style="overflow:auto;">
-          <table style="width:100%;border-collapse:collapse;">
-            <thead><tr>{head}</tr></thead>
-            <tbody>
-              {''.join(rows_html)}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div style="margin-top:8px;font-size:12px;color:#6b7280;">Tip: table scrolls horizontally on mobile.</div>
-    </div>
-    """
-
-def build_pretty_html_email(
-    date_str: str,
-    subject_title: str,
-    summary: Dict[str, str],
-    existing_df: pd.DataFrame,
-    buy_df: pd.DataFrame,
-    diagnostics_text: str,
-    plan_file: str,
-) -> str:
-    safe_date = html_escape(date_str)
-    preheader = html_escape(f"{subject_title} · {safe_date} · Plan + tables + diagnostics inside.")
-
-    def card(label: str, value: str, style: str) -> str:
-        return f"""
-        <td style="{style}border-radius:12px;padding:12px;">
-          <div style="font-size:12px;font-weight:700;opacity:.9;">{html_escape(label)}</div>
-          <div style="font-size:18px;font-weight:900;margin-top:2px;white-space:nowrap;">{html_escape(value)}</div>
-        </td>
-        """
-
-    cards = f"""
-      <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:12px 0;margin:0 0 12px 0;">
-        <tr>
-          {card("Total value", summary.get("total",""), "background:#f9fafb;border:1px solid #e5e7eb;color:#111827;")}
-          {card("Freed cash", summary.get("freed",""), "background:#ecfdf5;border:1px solid #d1fae5;color:#065f46;")}
-          {card("Buying power", summary.get("buying_power",""), "background:#eef2ff;border:1px solid #e0e7ff;color:#3730a3;")}
-        </tr>
-      </table>
-
-      <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:12px 0;margin:0 0 12px 0;">
-        <tr>
-          {card("Account cash", summary.get("account_cash",""), "background:#f9fafb;border:1px solid #e5e7eb;color:#111827;")}
-          {card("Cash reserve", summary.get("cash_reserve",""), "background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;")}
-          {card("Pyramid spend / adds", summary.get("pyr_spend_adds",""), "background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;")}
-        </tr>
-      </table>
-    """
-
-    existing_table = df_to_pretty_table(
-        existing_df,
-        "📌 Existing Positions — Action Plan (includes pyramiding)",
-        badge_cols={"Type": "type", "Recommendation": "reco"}
-    )
-    buys_table = df_to_pretty_table(
-        buy_df,
-        "🆕 New Entries — Action Plan",
-        badge_cols={"Type": "type"}
-    )
-
-    diag = html_escape(diagnostics_text or "No diagnostics.")
-
-    return f"""<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#f6f7fb;">
-  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
-    {preheader}
-  </div>
-
-  <div style="width:100%;padding:24px 12px;background:#f6f7fb;">
-    <div style="max-width:980px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
-
-      <div style="background:#0b1220;color:#ffffff;padding:18px 22px;">
-        <div style="font-size:18px;font-weight:900;line-height:1.25;">📊 Portfolio Manager — Plan</div>
-        <div style="font-size:12px;opacity:.9;margin-top:6px;">{html_escape(subject_title)} · {safe_date}</div>
-      </div>
-
-      <div style="padding:18px 22px;">
-        {cards}
-
-        <div style="margin:12px 0 16px 0;">
-          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">📁 Plan File</div>
-          <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px;font-size:12px;line-height:1.45;">
-            Saved as: <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;background:#eef0f6;padding:2px 6px;border-radius:6px;">{html_escape(plan_file)}</span>
-          </div>
-        </div>
-
-        {existing_table}
-        {buys_table}
-
-        <div style="margin:0 0 6px 0;">
-          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">🧾 Diagnostics</div>
-          <div style="background:#0b1220;color:#e5e7eb;border:1px solid #1f2a44;border-radius:12px;overflow:hidden;">
-            <div style="padding:10px 12px;background:#101a2f;color:#cbd5e1;font-size:12px;border-bottom:1px solid #1f2a44;">
-              stdout (copy/paste)
-            </div>
-            <pre style="margin:0;padding:12px;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;">{diag}</pre>
-          </div>
-        </div>
-
-      </div>
-
-      <div style="padding:14px 22px;background:#fbfbfd;border-top:1px solid #eef0f6;font-size:12px;color:#6b7280;">
-        Generated by portfolio_manager.py · {safe_date}
-      </div>
-    </div>
-  </div>
-</body>
-</html>
-"""
-
-
-# =========================
+    if u == "BUY":  return badge("BUY", "#eef2ff", "#3730a3")
+    if u == "SELL": return badge("SELL", "#fee2e2", "#991b1b")
+    if u == "ADD":  return badge("ADD", "#ecfdf5", "#065f46")
+    return badge(u, "#f3f4f6", "#374151")
+# ============================================================
 # MARKET DATA HELPERS
-# =========================
+# ============================================================
 def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -504,12 +275,6 @@ def get_current_price(ticker: str, fallback: float) -> Tuple[float, str]:
                 return float(rmp), "info.regularMarketPrice"
     except Exception:
         pass
-    try:
-        intraday = t.history(period="1d", interval="1m")
-        if intraday is not None and not intraday.empty and "Close" in intraday.columns:
-            return float(intraday["Close"].iloc[-1]), "history(1d,1m).last_close"
-    except Exception:
-        pass
     return float(fallback), "fallback_daily_close"
 
 def atr_advice(is_call: bool, price: float, atr_stop: float, atr: float) -> Tuple[str, float, float, bool]:
@@ -534,117 +299,10 @@ def atr_advice(is_call: bool, price: float, atr_stop: float, atr: float) -> Tupl
     return "OK", dist, dist_atr, False
 
 
-# =========================
-# VOL-ADJ BUY HELPERS
-# =========================
-def atr_pct_for_ticker(
-    ticker: str,
-    period: int,
-    report_lines: list[str],
-    ticker_cache: Dict[str, pd.DataFrame],
-) -> Optional[float]:
-    """
-    ATR% = ATR(period) / current_price using completed daily bars.
-    """
-    try:
-        if ticker not in ticker_cache:
-            df = yf.download(ticker, period="9mo", interval="1d", progress=False)
-            df = flatten_columns(df).dropna() if df is not None else pd.DataFrame()
-            ticker_cache[ticker] = df
-
-        df = ticker_cache.get(ticker, pd.DataFrame())
-        if df is None or df.empty:
-            return None
-
-        df_completed = remove_today_partial_bar(df).dropna()
-        if len(df_completed) < max(period, 30):
-            return None
-
-        atr_series = calculate_atr(df_completed, period)
-        atr_last = atr_series.iloc[-1]
-        if pd.isna(atr_last):
-            return None
-
-        close_price = float(df_completed["Close"].iloc[-1])
-        cur_price, _src = get_current_price(ticker, fallback=close_price)
-        if cur_price <= 0:
-            return None
-
-        return float(float(atr_last) / float(cur_price))
-    except Exception as e:
-        report_lines.append(f"DIAG: ATR% calc exception for {ticker}: {e}")
-        return None
-
-def allocate_buying_power_vol_adj(
-    cand: pd.DataFrame,
-    buying_power: float,
-    max_new_per_run: int,
-    max_contracts_per_pos: int,
-    report_lines: list[str],
-) -> pd.DataFrame:
-    """
-    Allocate buying_power across candidates using weights = 1/ATR%.
-    Returns DF with BuyContracts + EstCostTotal.
-    """
-    if cand is None or cand.empty or buying_power <= 0:
-        return pd.DataFrame()
-
-    work = cand.copy()
-    work = work.replace([np.inf, -np.inf], np.nan).dropna(subset=["EstCost1", "ATRpct"])
-    work = work[np.isfinite(work["EstCost1"]) & (work["EstCost1"] > 0)].copy()
-    work = work[np.isfinite(work["ATRpct"]) & (work["ATRpct"] > 0)].copy()
-    if work.empty:
-        return pd.DataFrame()
-
-    # prefer lower ATR% (smoother)
-    work = work.sort_values(["ATRpct", "Ticker"]).head(max_new_per_run).copy()
-
-    work["Weight"] = 1.0 / work["ATRpct"].astype(float)
-    wsum = float(work["Weight"].sum())
-    if not np.isfinite(wsum) or wsum <= 0:
-        return pd.DataFrame()
-
-    work["AllocCash"] = (work["Weight"] / wsum) * float(buying_power)
-    work["BuyContracts"] = np.floor(work["AllocCash"] / work["EstCost1"]).astype(int)
-    work["BuyContracts"] = work["BuyContracts"].clip(lower=0, upper=max_contracts_per_pos).astype(int)
-
-    # Ensure at least 1 contract if affordable
-    for idx, r in work.iterrows():
-        if int(r["BuyContracts"]) <= 0:
-            est1 = float(r["EstCost1"])
-            if buying_power >= est1:
-                work.at[idx, "BuyContracts"] = 1
-
-    work["EstCostTotal"] = (work["BuyContracts"] * work["EstCost1"]).round(2)
-
-    # Trim if overspend (due to min-1 + rounding)
-    guard = 10000
-    while float(work["EstCostTotal"].sum()) > buying_power and guard > 0:
-        guard -= 1
-        # trim highest vol first
-        work = work.sort_values(["ATRpct"], ascending=False).copy()
-        trimmed = False
-        for idx, r in work.iterrows():
-            bc = int(r["BuyContracts"])
-            if bc > 0:
-                work.at[idx, "BuyContracts"] = bc - 1
-                work.at[idx, "EstCostTotal"] = round((bc - 1) * float(r["EstCost1"]), 2)
-                trimmed = True
-                break
-        if not trimmed:
-            break
-
-    work = work.sort_values(["ATRpct", "Ticker"]).copy()
-    report_lines.append(
-        f"DIAG: Vol-adjusted allocation (1/ATR%). cands={len(work)} "
-        f"spend={float(work['EstCostTotal'].sum()):.2f} buying_power={buying_power:.2f}"
-    )
-    return work
-
-
-# =========================
-# OPTION PRICING FROM option_name (positions.csv)
-# =========================
+# ============================================================
+# OPTION PARSING + PRICING (from option_name)
+# option_name format expected: "TICKER YYYY-MM-DD C 100"  or "TICKER YYYY-MM-DD P 100"
+# ============================================================
 _OPT_RE = re.compile(r"^\s*([A-Z]{1,6})\s+(\d{4}-\d{2}-\d{2})\s+([CP])\s+(\d+(\.\d+)?)\s*$", re.IGNORECASE)
 
 def parse_option_name(option_name: str) -> Optional[Tuple[str, str, str, float]]:
@@ -686,31 +344,25 @@ def fetch_option_quote_from_name(option_name: str) -> Dict[str, Any]:
         except Exception:
             mid = None
 
-        price = None
-        src = None
         if mid is not None and mid > 0:
-            price = float(mid)
-            src = "mid(bid,ask)"
-        else:
-            try:
-                l = float(last) if last is not None else np.nan
-                if np.isfinite(l) and l > 0:
-                    price = float(l)
-                    src = "lastPrice"
-            except Exception:
-                price = None
+            return {"ok": True, "price": float(mid), "source": "mid(bid,ask)"}
 
-        if price is None:
-            return {"ok": False, "reason": "no_price"}
+        try:
+            l = float(last) if last is not None else np.nan
+            if np.isfinite(l) and l > 0:
+                return {"ok": True, "price": float(l), "source": "lastPrice"}
+        except Exception:
+            pass
 
-        return {"ok": True, "price": price, "source": src}
+        return {"ok": False, "reason": "no_price"}
     except Exception:
         return {"ok": False, "reason": "exception"}
 
 
-# =========================
-# ENTRY SCAN IMPORT (TotalNarrow): DF return OR print-only
-# =========================
+# ============================================================
+# SCANNER IMPORT (TotalNarrow) — DF return or stdout parsing fallback
+# NOTE: Manager does NOT pass news args to scanner.
+# ============================================================
 _BULLET_HEAD_RE = re.compile(r"^[•\-\*]\s*([A-Z]{1,6})\s+—\s+([A-Z_]+)", re.UNICODE)
 _OPTION_LINE_RE = re.compile(
     r"Option:\s*(CALL|PUT)\s+([\d\.]+)\s+exp\s+(\d{4}-\d{2}-\d{2})\s+\[([A-Z0-9]+)\]\s+@\s+last\s+([\d\.]+)",
@@ -721,7 +373,7 @@ def parse_scanner_stdout_to_df(text: str) -> pd.DataFrame:
     if not text or not text.strip():
         return pd.DataFrame()
 
-    rows: list[Dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = []
     cur: Dict[str, Any] = {}
 
     for raw in text.splitlines():
@@ -760,27 +412,29 @@ def parse_scanner_stdout_to_df(text: str) -> pd.DataFrame:
     df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
     return df
 
-def run_entry_scan(report_lines: list[str]) -> pd.DataFrame:
+def run_entry_scan(report_lines: list) -> pd.DataFrame:
     try:
         import TotalNarrow as scan
     except Exception as e:
         report_lines.append(f"DIAG: Failed to import TotalNarrow.py: {e}")
         return pd.DataFrame()
 
-    if hasattr(scan, "generate_new_entries"):
+    # Try DF path first
+    if hasattr(scan, "generate_new_entries") and callable(scan.generate_new_entries):
         try:
             df = scan.generate_new_entries()
-            if isinstance(df, pd.DataFrame) and not df.empty:
+            if isinstance(df, pd.DataFrame):
                 report_lines.append(f"DIAG: Scanner returned DF rows={len(df)} cols={list(df.columns)}")
                 return df
         except Exception as e:
             report_lines.append(f"DIAG: Scanner generate_new_entries() exception: {e}")
 
+    # stdout fallback
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
             if hasattr(scan, "main") and callable(scan.main):
-                scan.main()
+                scan.main([])
             elif hasattr(scan, "run") and callable(scan.run):
                 scan.run()
             elif hasattr(scan, "generate_new_entries") and callable(scan.generate_new_entries):
@@ -796,11 +450,9 @@ def run_entry_scan(report_lines: list[str]) -> pd.DataFrame:
 
     report_lines.append("DIAG: Scanner produced no DF and no stdout.")
     return pd.DataFrame()
-
-
-# =========================
-# OPT / PYRAMID LOGIC
-# =========================
+# ============================================================
+# EXIT / PYRAMID HELPERS
+# ============================================================
 def decide_sell_count(contracts: int, broken10: bool, broken5: bool) -> int:
     if contracts <= 0:
         return 0
@@ -823,16 +475,6 @@ def option_position_value(option_price: Optional[float], contracts: int) -> floa
     if option_price is None or contracts <= 0:
         return 0.0
     return float(option_price) * CONTRACT_MULTIPLIER * contracts
-
-def estimate_cost_from_entry_row(r: pd.Series) -> float:
-    for col in ("OptionLast", "OptionMid", "OptionPrice", "Mid", "Last"):
-        try:
-            p = float(r.get(col, ""))
-            if np.isfinite(p) and p > 0:
-                return p * CONTRACT_MULTIPLIER
-        except Exception:
-            continue
-    return float("inf")
 
 def compute_option_return(entry_price: Optional[float], mark: Optional[float]) -> Optional[float]:
     if entry_price is None or mark is None:
@@ -861,6 +503,7 @@ def choose_add_contracts(
         return 0, "No option return calc"
     if atr_ok is False:
         return 0, "ATR not OK"
+
     if PYR_REQUIRE_BOTH:
         if not (trend10_intact and trend5_intact):
             return 0, "Trend not intact (need 10D+5D)"
@@ -876,9 +519,207 @@ def choose_add_contracts(
     return 0, "Below pyramid thresholds"
 
 
-# =========================
+# ============================================================
+# BUY CANDIDATE COST + ATR% + VOL ALLOCATION (with NEWS bias)
+# ============================================================
+def estimate_cost_from_entry_row(r: pd.Series) -> float:
+    for col in ("OptionLast", "OptionMid", "OptionPrice", "Mid", "Last"):
+        try:
+            p = float(r.get(col, ""))
+            if np.isfinite(p) and p > 0:
+                return p * CONTRACT_MULTIPLIER
+        except Exception:
+            continue
+    return float("inf")
+
+def atr_pct_for_ticker(
+    ticker: str,
+    period: int,
+    report_lines: list,
+    ticker_cache: Dict[str, pd.DataFrame],
+) -> Optional[float]:
+    try:
+        if ticker not in ticker_cache:
+            df = yf.download(ticker, period="9mo", interval="1d", progress=False)
+            df = flatten_columns(df).dropna() if df is not None else pd.DataFrame()
+            ticker_cache[ticker] = df
+
+        df = ticker_cache.get(ticker, pd.DataFrame())
+        if df is None or df.empty:
+            return None
+
+        df_completed = remove_today_partial_bar(df).dropna()
+        if len(df_completed) < max(period, 30):
+            return None
+
+        atr_series = calculate_atr(df_completed, period)
+        atr_last = atr_series.iloc[-1]
+        if pd.isna(atr_last):
+            return None
+
+        close_price = float(df_completed["Close"].iloc[-1])
+        cur_price, _src = get_current_price(ticker, fallback=close_price)
+        if cur_price <= 0:
+            return None
+
+        return float(float(atr_last) / float(cur_price))
+    except Exception as e:
+        report_lines.append(f"DIAG: ATR% calc exception for {ticker}: {e}")
+        return None
+
+def _news_adj(action: str, news_score: Optional[float], geo_risk: Optional[float]) -> float:
+    """
+    Bias sizing based on directional sentiment.
+      BUY_CALL: directional = +NewsScore
+      BUY_PUT : directional = -NewsScore
+    Soft penalty if GeoRisk too high.
+    """
+    if MANAGER_NEWS_MODE != "bias":
+        return 1.0
+    if news_score is None or not np.isfinite(news_score):
+        directional = 0.0
+    else:
+        directional = float(news_score)
+    a = (action or "").upper()
+    if a == "BUY_PUT":
+        directional = -directional
+
+    m = 1.0 + NEWS_BIAS_ALPHA * directional
+    if geo_risk is not None and np.isfinite(geo_risk) and float(geo_risk) > MANAGER_GEO_RISK_MAX:
+        m *= 0.60
+
+    return float(np.clip(m, NEWS_BIAS_CLIP_MIN, NEWS_BIAS_CLIP_MAX))
+
+def allocate_buying_power_vol_adj(
+    cand: pd.DataFrame,
+    buying_power: float,
+    max_new_per_run: int,
+    max_contracts_per_pos: int,
+    report_lines: list,
+) -> pd.DataFrame:
+    if cand is None or cand.empty or buying_power <= 0:
+        return pd.DataFrame()
+
+    work = cand.copy()
+    work = work.replace([np.inf, -np.inf], np.nan).dropna(subset=["EstCost1", "ATRpct"])
+    work = work[np.isfinite(work["EstCost1"]) & (work["EstCost1"] > 0)].copy()
+    work = work[np.isfinite(work["ATRpct"]) & (work["ATRpct"] > 0)].copy()
+    if work.empty:
+        return pd.DataFrame()
+
+    # normalize news fields if present
+    if "NewsScore" in work.columns:
+        work["NewsScore"] = pd.to_numeric(work["NewsScore"], errors="coerce")
+    if "GeoRisk" in work.columns:
+        work["GeoRisk"] = pd.to_numeric(work["GeoRisk"], errors="coerce")
+
+    # prefer smoother (lower ATR%) then cap count
+    work = work.sort_values(["ATRpct", "Ticker"]).head(max_new_per_run).copy()
+
+    work["WeightBase"] = 1.0 / work["ATRpct"].astype(float)
+    work["NewsAdj"] = 1.0
+    if "NewsScore" in work.columns or "GeoRisk" in work.columns:
+        for idx, r in work.iterrows():
+            ns = r.get("NewsScore", np.nan)
+            gr = r.get("GeoRisk", np.nan)
+            a  = r.get("Action", "")
+            adj = _news_adj(a, ns if np.isfinite(ns) else None, gr if np.isfinite(gr) else None)
+            work.at[idx, "NewsAdj"] = adj
+
+    work["Weight"] = work["WeightBase"] * work["NewsAdj"]
+    wsum = float(work["Weight"].sum())
+    if not np.isfinite(wsum) or wsum <= 0:
+        return pd.DataFrame()
+
+    work["AllocCash"] = (work["Weight"] / wsum) * float(buying_power)
+    work["BuyContracts"] = np.floor(work["AllocCash"] / work["EstCost1"]).astype(int)
+    work["BuyContracts"] = work["BuyContracts"].clip(lower=0, upper=max_contracts_per_pos).astype(int)
+
+    # Ensure at least 1 contract if affordable
+    for idx, r in work.iterrows():
+        if int(r["BuyContracts"]) <= 0:
+            est1 = float(r["EstCost1"])
+            if buying_power >= est1:
+                work.at[idx, "BuyContracts"] = 1
+
+    work["EstCostTotal"] = (work["BuyContracts"] * work["EstCost1"]).round(2)
+
+    # Trim if overspend
+    guard = 10000
+    while float(work["EstCostTotal"].sum()) > buying_power and guard > 0:
+        guard -= 1
+        work = work.sort_values(["ATRpct"], ascending=False).copy()
+        trimmed = False
+        for idx, r in work.iterrows():
+            bc = int(r["BuyContracts"])
+            if bc > 0:
+                work.at[idx, "BuyContracts"] = bc - 1
+                work.at[idx, "EstCostTotal"] = round((bc - 1) * float(r["EstCost1"]), 2)
+                trimmed = True
+                break
+        if not trimmed:
+            break
+
+    work = work.sort_values(["ATRpct", "Ticker"]).copy()
+    report_lines.append(
+        f"DIAG: Allocation: cands={len(work)} spend={float(work['EstCostTotal'].sum()):.2f} "
+        f"buying_power={buying_power:.2f} news_mode={MANAGER_NEWS_MODE}"
+    )
+    return work
+# ============================================================
+# SIMPLE PRETTY TABLE (compact)
+# ============================================================
+def df_to_html_table(df: pd.DataFrame, title: str, badge_col: str = "") -> str:
+    if df is None or df.empty:
+        return f"<h3 style='margin:12px 0 6px 0'>{html_escape(title)}</h3><div style='padding:10px;border:1px solid #e5e7eb;border-radius:10px;background:#f9fafb;'>✅ No rows</div>"
+
+    cols = list(df.columns)
+    th = "".join([f"<th style='text-align:left;padding:8px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;'>{html_escape(c)}</th>" for c in cols])
+    rows = []
+    for _, r in df.iterrows():
+        tds = []
+        for c in cols:
+            v = "" if pd.isna(r[c]) else str(r[c])
+            if badge_col and c == badge_col:
+                tds.append(f"<td style='padding:8px;border-bottom:1px solid #f1f5f9;white-space:nowrap;text-align:center;'>{badge_type(v)}</td>")
+            else:
+                tds.append(f"<td style='padding:8px;border-bottom:1px solid #f1f5f9;white-space:nowrap;font-size:12px;'>{html_escape(v)}</td>")
+        rows.append("<tr>" + "".join(tds) + "</tr>")
+
+    return f"""
+    <h3 style='margin:12px 0 6px 0'>{html_escape(title)}</h3>
+    <div style="border:1px solid #e5e7eb;border-radius:12px;overflow:auto;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr>{th}</tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+    </div>
+    """
+
+def build_email(subject_title: str, date_str: str, summary_lines: list, html_tables: str, diagnostics: str) -> str:
+    summ = "<br>".join([html_escape(x) for x in summary_lines])
+    diag = html_escape(diagnostics)
+    return f"""<!doctype html>
+<html><body style="margin:0;background:#f6f7fb;font-family:Arial;">
+  <div style="max-width:980px;margin:20px auto;background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;">
+    <div style="background:#0b1220;color:#fff;padding:16px 18px;">
+      <div style="font-size:18px;font-weight:800;">📊 Portfolio Manager — {html_escape(subject_title)}</div>
+      <div style="opacity:.9;font-size:12px;margin-top:6px;">{html_escape(date_str)}</div>
+    </div>
+    <div style="padding:16px 18px;">
+      <div style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:12px;background:#f9fafb;font-size:12px;line-height:1.6;">
+        {summ}
+      </div>
+      {html_tables}
+      <h3 style="margin:12px 0 6px 0;">🧾 Diagnostics</h3>
+      <pre style="background:#0b1220;color:#e5e7eb;padding:12px;border-radius:12px;overflow:auto;font-size:12px;line-height:1.5;">{diag}</pre>
+    </div>
+  </div>
+</body></html>"""
+
+# ============================================================
 # MAIN
-# =========================
+# ============================================================
 def main():
     if not os.path.exists(CSV_FILE):
         raise FileNotFoundError(f"{CSV_FILE} not found")
@@ -893,7 +734,7 @@ def main():
         raise ValueError(f"{CSV_FILE} missing required columns: {sorted(missing)}")
 
     ticker_cache: Dict[str, pd.DataFrame] = {}
-    report_lines: list[str] = []
+    report_lines: list = []
     any_action = False
 
     enriched = positions.copy()
@@ -903,14 +744,14 @@ def main():
     enriched["sell_count_opt"] = 0
     enriched["sell_count_final"] = 0
     enriched["add_contracts"] = 0
-    enriched["pyramid_reason"] = pd.Series([""] * len(enriched), dtype="object")
-    enriched["option_src"] = pd.Series([None] * len(enriched), dtype="object")
-    enriched["recommendation_final"] = pd.Series(["HOLD"] * len(enriched), dtype="object")
+    enriched["pyramid_reason"] = ""
+    enriched["option_src"] = ""
+    enriched["recommendation_final"] = "HOLD"
 
     total_value = 0.0
     min_needed = max(ATR_PERIOD, STRUCTURE_10) + 10
 
-    # ---- value + exit signals
+    # ---------------- existing positions: exits + value ----------------
     for i, row in positions.iterrows():
         ticker = str(row["ticker"]).strip().upper()
         option_name = str(row["option_name"]).strip()
@@ -919,14 +760,12 @@ def main():
         entry_opt = to_float(row.get("option_entry_price"))
 
         oq = fetch_option_quote_from_name(option_name)
-        option_mark = None
-        option_src = ""
         if oq.get("ok"):
             option_mark = float(oq["price"])
             option_src = str(oq.get("source", ""))
         else:
             option_mark = entry_opt
-            option_src = f"fallback_entry_price({oq.get('reason')})"
+            option_src = f"fallback_entry({oq.get('reason')})"
 
         pos_value = option_position_value(option_mark, contracts)
         total_value += pos_value
@@ -965,34 +804,33 @@ def main():
         atr = float(atr_last)
 
         w10 = prior_window(df_completed, STRUCTURE_10)
-        w5 = prior_window(df_completed, STRUCTURE_5)
+        w5  = prior_window(df_completed, STRUCTURE_5)
         low10, high10 = float(w10["Low"].min()), float(w10["High"].max())
-        low5, high5 = float(w5["Low"].min()), float(w5["High"].max())
+        low5,  high5  = float(w5["Low"].min()),  float(w5["High"].max())
 
         parsed = parse_option_name(option_name)
         if not parsed:
             enriched.at[i, "recommendation_final"] = "BAD_OPTION_NAME"
             continue
+
         _, _, opt_type, _ = parsed
         is_call = (opt_type == "CALL")
-        direction = opt_type
 
         if is_call:
             atr_stop = float(entry_under - ATR_MULTIPLIER * atr)
             broken10_cur = bool(current_price < low10)
-            broken5_cur = bool(current_price < low5)
+            broken5_cur  = bool(current_price < low5)
         else:
             atr_stop = float(entry_under + ATR_MULTIPLIER * atr)
             broken10_cur = bool(current_price > high10)
-            broken5_cur = bool(current_price > high5)
+            broken5_cur  = bool(current_price > high5)
 
         trend10_intact = not broken10_cur
-        trend5_intact = not broken5_cur
+        trend5_intact  = not broken5_cur
 
         adv_u, dist_u, dist_u_atr, stop_hit = atr_advice(is_call, current_price, atr_stop, atr)
         atr_ok = (adv_u == "OK") and (stop_hit is False)
 
-        # exits first
         sell_exit = decide_sell_count(contracts, broken10_cur, broken5_cur)
         enriched.at[i, "sell_count_exit"] = sell_exit
         if sell_exit > 0:
@@ -1000,37 +838,22 @@ def main():
 
         opt_ret = compute_option_return(entry_opt, option_mark)
 
+        # store for pyramiding
+        enriched.at[i, "_trend10_intact"] = trend10_intact
+        enriched.at[i, "_trend5_intact"]  = trend5_intact
+        enriched.at[i, "_atr_ok"]         = atr_ok
+        enriched.at[i, "_opt_ret"]        = opt_ret if opt_ret is not None else np.nan
+
         report_lines.append(
-            f"""Ticker: {ticker} ({direction})
-Option: {option_name}
-Contracts: {contracts}
-Option Entry: {entry_opt if entry_opt is not None else ''} | Mark: {option_mark if option_mark is not None else ''} (src: {option_src})
-Option Return: {(opt_ret*100):.1f}%""" if opt_ret is not None else f"""Ticker: {ticker} ({direction})
-Option: {option_name}
-Contracts: {contracts}
-Option Entry: {entry_opt if entry_opt is not None else ''} | Mark: {option_mark if option_mark is not None else ''} (src: {option_src})
-Option Return: (n/a)""" + f"""
-
-Underlying Entry: {entry_under:.2f}
-Current: {current_price:.2f} (src: {current_src})
-
-ATR({ATR_PERIOD}): {atr:.2f}
-ATR Stop ({ATR_MULTIPLIER}x): {atr_stop:.2f}
-ATR advice (CURRENT): {adv_u} dist {dist_u:+.2f} ({dist_u_atr:+.2f} ATR)
-
-Trend (CURRENT): 10D={'INTACT' if trend10_intact else 'BROKEN'} | 5D={'INTACT' if trend5_intact else 'BROKEN'}
-Exit recommendation: {label_sell(sell_exit, contracts)}
-"""
+            f"{ticker} {opt_type}: cur={current_price:.2f} src={current_src} "
+            f"10D={'OK' if trend10_intact else 'BRK'} 5D={'OK' if trend5_intact else 'BRK'} "
+            f"exit={label_sell(sell_exit, contracts)} ATR={atr:.2f} ATR_advice={adv_u}"
         )
 
-        enriched.at[i, "_trend10_intact"] = trend10_intact
-        enriched.at[i, "_trend5_intact"] = trend5_intact
-        enriched.at[i, "_atr_ok"] = atr_ok
-        enriched.at[i, "_opt_ret"] = opt_ret if opt_ret is not None else np.nan
-
-    # Oversize trim
+    # ---------------- oversize trim ----------------
     usable_value = total_value * (1.0 - CASH_BUFFER_PCT)
     avg_pos_budget = usable_value / max(len(enriched), 1) if usable_value > 0 else 0.0
+
     if TRIM_TO_SLOT and avg_pos_budget > 0:
         for i, row in enriched.iterrows():
             contracts = to_int(row.get("contracts", 1), 1)
@@ -1051,12 +874,12 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
                     enriched.at[i, "sell_count_opt"] = sell_needed
                     any_action = True
 
-    # Merge sells + freed cash
+    # ---------------- merge sells + freed cash ----------------
     freed_cash = 0.0
     for i, row in enriched.iterrows():
         contracts = to_int(row.get("contracts", 1), 1)
         s_exit = to_int(row.get("sell_count_exit", 0), 0)
-        s_opt = to_int(row.get("sell_count_opt", 0), 0)
+        s_opt  = to_int(row.get("sell_count_opt", 0), 0)
         s_final = min(contracts, max(s_exit, s_opt))
         enriched.at[i, "sell_count_final"] = s_final
         enriched.at[i, "recommendation_final"] = label_sell(s_final, contracts)
@@ -1065,18 +888,16 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
         if option_mark is not None and np.isfinite(option_mark) and s_final > 0:
             freed_cash += option_mark * CONTRACT_MULTIPLIER * s_final
 
-    # =========================
-    # PYRAMIDING (adds)
-    # =========================
+    # ---------------- pyramiding ----------------
     pyramid_budget = usable_value * PYR_ADD_BUDGET_PCT
-    pyramid_spend = 0.0
-    adds_used = 0
+    pyramid_spend  = 0.0
+    adds_used      = 0
 
     for i, row in enriched.iterrows():
         if adds_used >= PYR_MAX_ADDS_PER_RUN:
             break
 
-        contracts = to_int(row.get("contracts", 1), 1)
+        contracts  = to_int(row.get("contracts", 1), 1)
         sell_final = to_int(row.get("sell_count_final", 0), 0)
         will_sell_any = sell_final > 0
 
@@ -1087,8 +908,8 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
             continue
 
         trend10_intact = bool(row.get("_trend10_intact", True))
-        trend5_intact = bool(row.get("_trend5_intact", True))
-        atr_ok = bool(row.get("_atr_ok", False))
+        trend5_intact  = bool(row.get("_trend5_intact", True))
+        atr_ok         = bool(row.get("_atr_ok", False))
 
         opt_ret_val = row.get("_opt_ret", np.nan)
         opt_ret = None if (opt_ret_val is None or pd.isna(opt_ret_val)) else float(opt_ret_val)
@@ -1110,7 +931,7 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
         cost_add = option_mark * CONTRACT_MULTIPLIER * add_n
         if (pyramid_spend + cost_add) > pyramid_budget:
             enriched.at[i, "add_contracts"] = 0
-            enriched.at[i, "pyramid_reason"] = f"No pyramid budget (need {money2(cost_add)}, left {money2(pyramid_budget - pyramid_spend)})"
+            enriched.at[i, "pyramid_reason"] = "No pyramid budget"
             continue
 
         if contracts + add_n > MAX_CONTRACTS_PER_POSITION:
@@ -1118,7 +939,7 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
 
         if add_n <= 0:
             enriched.at[i, "add_contracts"] = 0
-            enriched.at[i, "pyramid_reason"] = "At max contracts cap"
+            enriched.at[i, "pyramid_reason"] = "At max cap"
             continue
 
         pyramid_spend += option_mark * CONTRACT_MULTIPLIER * add_n
@@ -1128,19 +949,17 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
         enriched.at[i, "add_contracts"] = add_n
         enriched.at[i, "pyramid_reason"] = reason
 
-    # =========================
-    # ACCOUNT CASH + BUYING POWER (NEW)
-    # =========================
+    # ---------------- buying power ----------------
     account_cash = read_account_cash_from_file(CASH_FILE)
     usable_account_cash = max(0.0, account_cash - CASH_RESERVE)
     buying_power = float(freed_cash + usable_account_cash)
 
     report_lines.append(f"DIAG: freed_cash={freed_cash:.2f}")
-    report_lines.append(f"DIAG: account_cash(file={CASH_FILE})={account_cash:.2f} cash_reserve={CASH_RESERVE:.2f} usable_account_cash={usable_account_cash:.2f}")
-    report_lines.append(f"DIAG: buying_power=freed_cash+usable_account_cash={buying_power:.2f}")
-    report_lines.append(f"DIAG: usable_value={usable_value:.2f} pyramid_budget={pyramid_budget:.2f} pyramid_spend={pyramid_spend:.2f} adds_used={adds_used}")
+    report_lines.append(f"DIAG: account_cash={account_cash:.2f} reserve={CASH_RESERVE:.2f} usable_account_cash={usable_account_cash:.2f}")
+    report_lines.append(f"DIAG: buying_power={buying_power:.2f}")
+    report_lines.append(f"DIAG: pyramid_budget={pyramid_budget:.2f} pyramid_spend={pyramid_spend:.2f} adds_used={adds_used}")
 
-    # ---- Scanner + buys (VOL-ADJ, funded by BUYING POWER)
+    # ---------------- scanner + new buys ----------------
     entries = run_entry_scan(report_lines)
     report_lines.append(f"DIAG: scanner_rows={len(entries)}")
     report_lines.append(f"DIAG: scanner_cols={list(entries.columns) if entries is not None else []}")
@@ -1148,18 +967,17 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
     open_positions = enriched[enriched.apply(lambda r: (to_int(r.get("contracts", 1), 1) - to_int(r.get("sell_count_final", 0), 0)) > 0, axis=1)]
     open_tickers = set(open_positions["ticker"].astype(str).str.upper().str.strip().tolist())
 
-    buy_rows: list[Dict[str, Any]] = []
+    buy_rows: List[Dict[str, Any]] = []
     if buying_power > 0 and entries is not None and not entries.empty and "Ticker" in entries.columns:
         cand = entries.copy()
         cand["Ticker"] = cand["Ticker"].astype(str).str.upper().str.strip()
         cand = cand[~cand["Ticker"].isin(open_tickers)].copy()
 
-        # estimate cost per contract from scanner
         cand["EstCost1"] = cand.apply(estimate_cost_from_entry_row, axis=1)
         cand = cand.replace([np.inf, -np.inf], np.nan).dropna(subset=["EstCost1"])
         cand = cand[np.isfinite(cand["EstCost1"]) & (cand["EstCost1"] > 0)].copy()
 
-        # compute ATR% for each ticker
+        # ATR%
         atrpcts = []
         for _, r in cand.iterrows():
             tk = str(r["Ticker"]).upper()
@@ -1169,49 +987,49 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
         cand = cand.replace([np.inf, -np.inf], np.nan).dropna(subset=["ATRpct"])
         cand = cand[np.isfinite(cand["ATRpct"]) & (cand["ATRpct"] > 0)].copy()
 
-        if cand.empty:
-            report_lines.append("DIAG: No buy candidates left after ATR% calc (cannot allocate vol-adjusted).")
-        else:
-            alloc = allocate_buying_power_vol_adj(
-                cand=cand,
-                buying_power=buying_power,
-                max_new_per_run=MAX_NEW_PER_RUN,
-                max_contracts_per_pos=MAX_CONTRACTS_PER_POSITION,
-                report_lines=report_lines,
-            )
+        alloc = allocate_buying_power_vol_adj(
+            cand=cand,
+            buying_power=buying_power,
+            max_new_per_run=MAX_NEW_PER_RUN,
+            max_contracts_per_pos=MAX_CONTRACTS_PER_POSITION,
+            report_lines=report_lines,
+        )
 
-            spend = float(alloc["EstCostTotal"].sum()) if not alloc.empty else 0.0
-            cash_left = float(buying_power - spend)
+        for _, r in alloc.iterrows():
+            buy_n = int(r.get("BuyContracts", 0))
+            if buy_n <= 0:
+                continue
 
-            for _, r in alloc.iterrows():
-                buy_n = int(r.get("BuyContracts", 0))
-                if buy_n <= 0:
-                    continue
+            row_out = {
+                "Type": "BUY",
+                "Ticker": str(r.get("Ticker", "")).upper(),
+                "Strategy": str(r.get("Action", "")),
+                "Expiry": str(r.get("Expiry", "")),
+                "OptionSymbol": str(r.get("OptionSymbol", "")),
+                "OptionLast": num(r.get("OptionLast", ""), 2),
+                "ATR%": f"{float(r.get('ATRpct'))*100:.2f}%",
+                "BuyContracts": buy_n,
+                "EstCostTotal": round(float(r.get("EstCostTotal", 0.0)), 2),
+                "Reason": "Vol-adjusted (1/ATR%) + News bias",
+            }
 
-                buy_rows.append({
-                    "Type": "BUY",
-                    "Ticker": str(r["Ticker"]).upper(),
-                    "Strategy": str(r.get("Action", "")),
-                    "Expiry": str(r.get("Expiry", "")),
-                    "OptionSymbol": str(r.get("OptionSymbol", "")),
-                    "OptionLast": num(r.get("OptionLast", ""), 2),
-                    "ATR%": f"{float(r.get('ATRpct'))*100:.2f}%",
-                    "BuyContracts": buy_n,
-                    "EstCostTotal": round(float(r.get("EstCostTotal", 0.0)), 2),
-                    "Reason": "Vol-adjusted allocation (1/ATR%) funded by buying power (freed + account cash)",
-                })
+            # NEWS passthrough
+            if SHOW_NEWS_IN_EMAIL:
+                row_out["Sector"] = str(r.get("Sector", ""))
+                row_out["Industry"] = str(r.get("Industry", ""))
+                row_out["NewsScore"] = num(r.get("NewsScore", ""), 3)
+                row_out["GeoRisk"] = num(r.get("GeoRisk", ""), 3)
 
-            report_lines.append(f"DIAG: buys_added={len(buy_rows)} spend={spend:.2f} cash_left={cash_left:.2f}")
+            buy_rows.append(row_out)
 
-    # ---- Plan DF (saved)
-    plan_rows: list[Dict[str, Any]] = []
-
+    # ---------------- build plan ----------------
+    plan_rows: List[Dict[str, Any]] = []
     for _, r in enriched.iterrows():
         ticker = str(r.get("ticker", "")).strip().upper()
         option_name = str(r.get("option_name", "")).strip()
         held = to_int(r.get("contracts", 1), 1)
         sell_n = to_int(r.get("sell_count_final", 0), 0)
-        add_n = to_int(r.get("add_contracts", 0), 0)
+        add_n  = to_int(r.get("add_contracts", 0), 0)
         if held <= 0:
             continue
 
@@ -1238,7 +1056,7 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
     plan_df = pd.DataFrame(plan_rows)
     plan_df.to_csv(PLAN_FILE, index=False)
 
-    # Also save a copy into docs/ for GitHub Pages dashboard
+    # also copy to docs/
     try:
         os.makedirs(DOCS_DIR, exist_ok=True)
         plan_df.to_csv(PLAN_DOCS_FILE, index=False)
@@ -1246,83 +1064,57 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
     except Exception as e:
         report_lines.append(f"DIAG: Failed to write docs plan copy: {e}")
 
-    # ---- Plain text (stdout fallback)
     date_str = datetime.now().strftime("%Y-%m-%d")
+    diagnostics = "\n".join(report_lines)
 
-    header_txt = []
-    header_txt.append(f"PORTFOLIO MANAGER — {date_str}")
-    header_txt.append(
-        f"Total: {money2(total_value)} | Usable: {money2(usable_value)} | "
-        f"Freed: {money2(freed_cash)} | AccountCash: {money2(account_cash)} | Reserve: {money2(CASH_RESERVE)} | "
-        f"BuyingPower: {money2(buying_power)} | "
-        f"PyramidBudget: {money2(pyramid_budget)} | PyramidSpend: {money2(pyramid_spend)} | "
-        f"Adds: {adds_used} | NewBuys: {len(buy_rows)}"
-    )
-    header_txt.append("Scanner: TotalNarrow.py")
-    header_txt.append(f"Cash file: {CASH_FILE}")
-    header_txt.append(f"Plan saved: {PLAN_FILE}")
-    header_txt.append("")
-    body_details = "\n-------------------------\n".join(report_lines) if report_lines else "No details."
-    text_body = "\n".join(header_txt) + "\nDETAILS\n=======\n" + body_details
-
-    # ---- HTML tables (pretty shell)
-    existing_df = plan_df[plan_df["Type"].isin(["SELL", "HOLD", "ADD"])][
-        ["Type", "Ticker", "Option", "ContractsHeld", "SellContracts", "AddContracts",
-         "Recommendation", "PositionValue", "OptionMark", "Reason", "PyramidReason"]
-    ].copy()
-
+    # email rendering
+    existing_df = plan_df[plan_df["Type"].isin(["SELL","HOLD","ADD"])].copy()
     if not existing_df.empty:
-        existing_df["PositionValue"] = existing_df["PositionValue"].apply(money0)
-        existing_df["OptionMark"] = existing_df["OptionMark"].apply(lambda x: "" if x == "" else num(x, 2))
+        if "PositionValue" in existing_df.columns:
+            existing_df["PositionValue"] = existing_df["PositionValue"].apply(money0)
+        if "OptionMark" in existing_df.columns:
+            existing_df["OptionMark"] = existing_df["OptionMark"].apply(lambda x: "" if x == "" else num(x, 2))
 
     buy_df = plan_df[plan_df["Type"].isin(["BUY"])].copy()
-    if not buy_df.empty:
-        cols = ["Type", "Ticker", "Strategy", "Expiry", "OptionSymbol", "OptionLast", "ATR%", "BuyContracts", "EstCostTotal", "Reason"]
-        buy_df = buy_df[cols]
+    if not buy_df.empty and "EstCostTotal" in buy_df.columns:
         buy_df["EstCostTotal"] = buy_df["EstCostTotal"].apply(money2)
 
-    # subject: include counts
-    sell_ct = 0 if plan_df is None or plan_df.empty else int((plan_df["Type"] == "SELL").sum())
-    add_ct  = 0 if plan_df is None or plan_df.empty else int((plan_df["Type"] == "ADD").sum())
-    buy_ct  = 0 if plan_df is None or plan_df.empty else int((plan_df["Type"] == "BUY").sum())
+    sell_ct = int((plan_df["Type"] == "SELL").sum()) if not plan_df.empty else 0
+    add_ct  = int((plan_df["Type"] == "ADD").sum()) if not plan_df.empty else 0
+    buy_ct  = int((plan_df["Type"] == "BUY").sum()) if not plan_df.empty else 0
 
-    if (any_action or len(buy_rows) > 0 or adds_used > 0):
+    if any_action or buy_ct > 0 or adds_used > 0:
         subject = f"🚨 Portfolio Plan — {date_str} ({sell_ct} sell / {add_ct} add / {buy_ct} buy)"
         subject_title = "Action needed"
     else:
         subject = f"✅ Portfolio Plan — {date_str} (no action)"
         subject_title = "No action"
 
-    summary = {
-        "total": money2(total_value),
-        "freed": money2(freed_cash),
-        "account_cash": money2(account_cash),
-        "cash_reserve": money2(CASH_RESERVE),
-        "buying_power": money2(buying_power),
-        "pyr_spend_adds": f"{money2(pyramid_spend)} / {adds_used}",
-    }
+    summary_lines = [
+        f"Total value: {money2(total_value)} | Usable: {money2(usable_value)}",
+        f"Freed cash: {money2(freed_cash)} | Account cash: {money2(account_cash)} | Reserve: {money2(CASH_RESERVE)}",
+        f"Buying power: {money2(buying_power)}",
+        f"Pyramid budget: {money2(pyramid_budget)} | Pyramid spend: {money2(pyramid_spend)} | Adds: {adds_used}",
+        f"New buys: {buy_ct} | News mode: {MANAGER_NEWS_MODE} | Show news: {SHOW_NEWS_IN_EMAIL}",
+        f"Plan saved: {PLAN_FILE} and {PLAN_DOCS_FILE}",
+    ]
 
-    html_email = build_pretty_html_email(
-        date_str=date_str,
-        subject_title=subject_title,
-        summary=summary,
-        existing_df=existing_df,
-        buy_df=buy_df,
-        diagnostics_text=body_details,
-        plan_file=PLAN_FILE,
-    )
+    tables_html = ""
+    tables_html += df_to_html_table(existing_df, "📌 Existing Positions — Plan", badge_col="Type")
+    tables_html += df_to_html_table(buy_df, "🆕 New Buys — Plan", badge_col="Type")
+
+    html_body = build_email(subject_title, date_str, summary_lines, tables_html, diagnostics)
 
     if smtp_ready():
         if EMAIL_MODE == "action_only" and subject.startswith("✅"):
             print(f"EMAIL_MODE=action_only and no action — skipping email. Plan saved: {PLAN_FILE}")
             return
-        send_pretty_email(subject, html_email)
+        send_pretty_email(subject, html_body)
         print(f"Email sent to {EMAIL_TO}. Plan saved: {PLAN_FILE}")
     else:
-        print("SMTP secrets not set — printing report instead\n")
         print(subject)
-        print(text_body)
-
+        print("\n".join(summary_lines))
+        print("\nDiagnostics:\n", diagnostics)
 
 if __name__ == "__main__":
     main()
