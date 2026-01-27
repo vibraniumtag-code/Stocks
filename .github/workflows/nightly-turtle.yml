@@ -1,3 +1,93 @@
-# This file is for nightly updates to the Savage workflow.
+name: Nightly Turtle Scanner (Pretty HTML Email)
 
-# Add other necessary configurations here.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2,15 * * *"  # 02:00 & 15:00 UTC
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    environment: GMAIL   # remove if not using Environment secrets
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f "Stocks/requirements.txt" ]; then pip install -r Stocks/requirements.txt; fi
+          if [ -f "requirements.txt" ]; then pip install -r requirements.txt; fi
+
+      # 🔹 Run your scanner (HTML + TXT output)
+      - name: Run Turtle script
+        run: |
+          python TotalNarrow.py \
+            --system 1 \
+            --allow-shorts 1 \
+            --top 5000 \
+            --save entries_tomorrow.csv \
+            --emit-checklist 1 \
+            --emit-html 1
+
+      # 🔹 Send PRETTY HTML email (with text fallback)
+      - name: Send HTML email
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+        run: |
+          python - <<'PY'
+          import os, glob, smtplib
+          from email.message import EmailMessage
+
+          host = os.environ["SMTP_HOST"]
+          port = int(os.environ.get("SMTP_PORT", "587"))
+          user = os.environ["SMTP_USER"]
+          pw   = os.environ["SMTP_PASS"]
+          to   = os.environ["EMAIL_TO"]
+
+          # Locate latest outputs
+          html_files = sorted(glob.glob("*_email_*.html"))
+          txt_files  = sorted(glob.glob("*_checklist_*.txt"))
+
+          if not html_files:
+              raise SystemExit("❌ No HTML email file found")
+
+          with open(html_files[-1], "r", encoding="utf-8") as f:
+              html_body = f.read()
+
+          text_body = "Turtle Scanner ran successfully. HTML report attached."
+          if txt_files:
+              with open(txt_files[-1], "r", encoding="utf-8") as f:
+                  text_body = f.read()
+
+          msg = EmailMessage()
+          msg["Subject"] = "🐢 Turtle Scanner — Tomorrow’s Entries"
+          msg["From"] = f"Turtle Scanner <{user}>"
+          msg["To"] = to
+
+          # Plain-text fallback (kept minimal)
+          msg.set_content(text_body)
+
+          # HTML version (THIS is what clients render)
+          msg.add_alternative(html_body, subtype="html")
+
+          with smtplib.SMTP(host, port) as s:
+              s.ehlo()
+              s.starttls()
+              s.ehlo()
+              s.login(user, pw)
+              s.send_message(msg)
+
+          print("✅ Pretty HTML email sent:", html_files[-1])
+          PY
