@@ -36,7 +36,7 @@ Optional env:
   EMAIL_MODE=always | entries_only   (default: always)
 
 NEWS env vars (optional):
-  NEWS_ENABLED=1
+  NEWS_ENABLED=0
   NEWS_DEBUG=1
   NEWS_MODE=annotate | gate | rank
   NEWS_LOOKBACK_DAYS=3
