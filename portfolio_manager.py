@@ -669,53 +669,206 @@ def allocate_buying_power_vol_adj(
 # ============================================================
 # SIMPLE PRETTY TABLE (compact)
 # ============================================================
-def df_to_html_table(df: pd.DataFrame, title: str, badge_col: str = "") -> str:
-    if df is None or df.empty:
-        return f"<h3 style='margin:12px 0 6px 0'>{html_escape(title)}</h3><div style='padding:10px;border:1px solid #e5e7eb;border-radius:10px;background:#f9fafb;'>✅ No rows</div>"
+def _badge(text: str, kind: str = "neutral") -> str:
+    t = (text or "").strip()
+    if t == "":
+        return ""
+    styles = {
+        "good":   "background:#ecfdf5;color:#065f46;border:1px solid #d1fae5;",
+        "warn":   "background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;",
+        "bad":    "background:#fef2f2;color:#991b1b;border:1px solid #fecaca;",
+        "info":   "background:#eef2ff;color:#3730a3;border:1px solid #e0e7ff;",
+        "neutral":"background:#f3f4f6;color:#374151;border:1px solid #e5e7eb;",
+    }
+    st = styles.get(kind, styles["neutral"])
+    return f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;font-weight:800;font-size:11px;{st}white-space:nowrap;'>{html_escape(t)}</span>"
 
-    cols = list(df.columns)
-    th = "".join([f"<th style='text-align:left;padding:8px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;'>{html_escape(c)}</th>" for c in cols])
-    rows = []
-    for _, r in df.iterrows():
+def _badge_for_type(t: str) -> str:
+    u = (t or "").upper()
+    if u == "SELL": return _badge("SELL", "bad")
+    if u == "BUY":  return _badge("BUY", "info")
+    if u == "ADD":  return _badge("ADD", "good")
+    if u == "HOLD": return _badge("HOLD", "neutral")
+    return _badge(u, "neutral")
+
+def _badge_for_reco(r: str) -> str:
+    u = (r or "").upper()
+    if u.startswith("SELL"): return _badge(u, "bad")
+    if u.startswith("ADD"):  return _badge(u, "good")
+    if u in ("HOLD", "NO_ACTION", "NO POSITION", "NO_POSITION"): return _badge(u, "neutral")
+    return _badge(u, "neutral")
+
+def df_to_pretty_table(df: pd.DataFrame, title: str, badge_cols: Optional[Dict[str, str]] = None) -> str:
+    badge_cols = badge_cols or {}
+
+    if df is None or df.empty:
+        return f"""
+        <div style="margin:0 0 16px 0;">
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">{html_escape(title)}</div>
+          <div style="padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px;background:#f9fafb;font-size:13px;">
+            ✅ No rows.
+          </div>
+        </div>
+        """
+
+    safe = df.copy().fillna("").astype(object)
+    cols = list(safe.columns)
+
+    head = "".join([
+        f"<th style='text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;font-size:12px;white-space:nowrap;'>{html_escape(c)}</th>"
+        for c in cols
+    ])
+
+    numeric_hint = set()
+    for c in cols:
+        lc = c.lower()
+        if any(k in lc for k in ["value", "mark", "cost", "contracts", "price", "pct", "return", "dist", "atr", "iv", "delta", "score", "risk"]):
+            numeric_hint.add(c)
+
+    rows_html = []
+    for i in range(len(safe)):
+        r = safe.iloc[i]
         tds = []
         for c in cols:
-            v = "" if pd.isna(r[c]) else str(r[c])
-            if badge_col and c == badge_col:
-                tds.append(f"<td style='padding:8px;border-bottom:1px solid #f1f5f9;white-space:nowrap;text-align:center;'>{badge_type(v)}</td>")
+            val = r[c]
+            sval = "" if val is None else str(val)
+
+            if c in badge_cols:
+                mode = badge_cols[c]
+                if mode == "type":
+                    cell = _badge_for_type(sval); align = "center"
+                elif mode == "reco":
+                    cell = _badge_for_reco(sval); align = "center"
+                else:
+                    cell = _badge(sval, "neutral"); align = "center"
             else:
-                tds.append(f"<td style='padding:8px;border-bottom:1px solid #f1f5f9;white-space:nowrap;font-size:12px;'>{html_escape(v)}</td>")
-        rows.append("<tr>" + "".join(tds) + "</tr>")
+                cell = html_escape(sval)
+                align = "right" if c in numeric_hint else "left"
+
+            bg = "#ffffff" if (i % 2 == 0) else "#fcfcfd"
+            tds.append(
+                f"<td style='padding:10px;border-bottom:1px solid #f1f5f9;font-size:12px;"
+                f"white-space:nowrap;text-align:{align};font-variant-numeric:tabular-nums;background:{bg};'>{cell}</td>"
+            )
+        rows_html.append("<tr>" + "".join(tds) + "</tr>")
 
     return f"""
-    <h3 style='margin:12px 0 6px 0'>{html_escape(title)}</h3>
-    <div style="border:1px solid #e5e7eb;border-radius:12px;overflow:auto;">
-      <table style="width:100%;border-collapse:collapse;">
-        <thead><tr>{th}</tr></thead>
-        <tbody>{''.join(rows)}</tbody>
-      </table>
+    <div style="margin:0 0 16px 0;">
+      <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">{html_escape(title)}</div>
+      <div style="border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+        <div style="overflow:auto;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead><tr>{head}</tr></thead>
+            <tbody>
+              {''.join(rows_html)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:#6b7280;">Tip: table scrolls horizontally on mobile.</div>
     </div>
     """
 
-def build_email(subject_title: str, date_str: str, summary_lines: list, html_tables: str, diagnostics: str) -> str:
-    summ = "<br>".join([html_escape(x) for x in summary_lines])
-    diag = html_escape(diagnostics)
+def build_pretty_html_email(
+    date_str: str,
+    subject_title: str,
+    summary: Dict[str, str],
+    existing_df: pd.DataFrame,
+    buy_df: pd.DataFrame,
+    diagnostics_text: str,
+    plan_file: str,
+) -> str:
+    safe_date = html_escape(date_str)
+    preheader = html_escape(f"{subject_title} · {safe_date} · Plan + tables + diagnostics inside.")
+
+    def card(label: str, value: str, style: str) -> str:
+        return f"""
+        <td style="{style}border-radius:12px;padding:12px;">
+          <div style="font-size:12px;font-weight:700;opacity:.9;">{html_escape(label)}</div>
+          <div style="font-size:18px;font-weight:900;margin-top:2px;white-space:nowrap;">{html_escape(value)}</div>
+        </td>
+        """
+
+    cards = f"""
+      <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:12px 0;margin:0 0 12px 0;">
+        <tr>
+          {card("Total value", summary.get("total",""), "background:#f9fafb;border:1px solid #e5e7eb;color:#111827;")}
+          {card("Freed cash", summary.get("freed",""), "background:#ecfdf5;border:1px solid #d1fae5;color:#065f46;")}
+          {card("Buying power", summary.get("buying_power",""), "background:#eef2ff;border:1px solid #e0e7ff;color:#3730a3;")}
+        </tr>
+      </table>
+      <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:12px 0;margin:0 0 12px 0;">
+        <tr>
+          {card("Account cash", summary.get("account_cash",""), "background:#f9fafb;border:1px solid #e5e7eb;color:#111827;")}
+          {card("Cash reserve", summary.get("cash_reserve",""), "background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;")}
+          {card("Pyramid spend / adds", summary.get("pyr_spend_adds",""), "background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;")}
+        </tr>
+      </table>
+    """
+
+    existing_table = df_to_pretty_table(
+        existing_df,
+        "📌 Existing Positions — Action Plan (includes pyramiding)",
+        badge_cols={"Type": "type", "Recommendation": "reco"}
+    )
+    buys_table = df_to_pretty_table(
+        buy_df,
+        "🆕 New Entries — Action Plan",
+        badge_cols={"Type": "type"}
+    )
+
+    diag = html_escape(diagnostics_text or "No diagnostics.")
+
     return f"""<!doctype html>
-<html><body style="margin:0;background:#f6f7fb;font-family:Arial;">
-  <div style="max-width:980px;margin:20px auto;background:#fff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;">
-    <div style="background:#0b1220;color:#fff;padding:16px 18px;">
-      <div style="font-size:18px;font-weight:800;">📊 Portfolio Manager — {html_escape(subject_title)}</div>
-      <div style="opacity:.9;font-size:12px;margin-top:6px;">{html_escape(date_str)}</div>
-    </div>
-    <div style="padding:16px 18px;">
-      <div style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:12px;background:#f9fafb;font-size:12px;line-height:1.6;">
-        {summ}
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f6f7fb;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+    {preheader}
+  </div>
+
+  <div style="width:100%;padding:24px 12px;background:#f6f7fb;">
+    <div style="max-width:980px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
+
+      <div style="background:#0b1220;color:#ffffff;padding:18px 22px;">
+        <div style="font-size:18px;font-weight:900;line-height:1.25;">📊 Portfolio Manager — Plan</div>
+        <div style="font-size:12px;opacity:.9;margin-top:6px;">{html_escape(subject_title)} · {safe_date}</div>
       </div>
-      {html_tables}
-      <h3 style="margin:12px 0 6px 0;">🧾 Diagnostics</h3>
-      <pre style="background:#0b1220;color:#e5e7eb;padding:12px;border-radius:12px;overflow:auto;font-size:12px;line-height:1.5;">{diag}</pre>
+
+      <div style="padding:18px 22px;">
+        {cards}
+
+        <div style="margin:12px 0 16px 0;">
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">📁 Plan File</div>
+          <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px;font-size:12px;line-height:1.45;">
+            Saved as: <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;background:#eef0f6;padding:2px 6px;border-radius:6px;">{html_escape(plan_file)}</span>
+          </div>
+        </div>
+
+        {existing_table}
+        {buys_table}
+
+        <div style="margin:0 0 6px 0;">
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">🧾 Diagnostics</div>
+          <div style="background:#0b1220;color:#e5e7eb;border:1px solid #1f2a44;border-radius:12px;overflow:hidden;">
+            <div style="padding:10px 12px;background:#101a2f;color:#cbd5e1;font-size:12px;border-bottom:1px solid #1f2a44;">
+              stdout (copy/paste)
+            </div>
+            <pre style="margin:0;padding:12px;font-size:12px;line-height:1.5;white-space:pre;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;">{diag}</pre>
+          </div>
+        </div>
+
+      </div>
+
+      <div style="padding:14px 22px;background:#fbfbfd;border-top:1px solid #eef0f6;font-size:12px;color:#6b7280;">
+        Generated by portfolio_manager.py · {safe_date}
+      </div>
     </div>
   </div>
-</body></html>"""
+</body>
+</html>
+"""
+
 
 # ============================================================
 # MAIN
@@ -1099,11 +1252,28 @@ def main():
         f"Plan saved: {PLAN_FILE} and {PLAN_DOCS_FILE}",
     ]
 
-    tables_html = ""
-    tables_html += df_to_html_table(existing_df, "📌 Existing Positions — Plan", badge_col="Type")
-    tables_html += df_to_html_table(buy_df, "🆕 New Buys — Plan", badge_col="Type")
+	# ---- build "nice" email using pretty shell
+	date_str = datetime.now().strftime("%Y-%m-%d")
+	body_details = "\n".join(report_lines)
 
-    html_body = build_email(subject_title, date_str, summary_lines, tables_html, diagnostics)
+	summary = {
+		"total": money2(total_value),
+		"freed": money2(freed_cash),
+		"account_cash": money2(account_cash),
+		"cash_reserve": money2(CASH_RESERVE),
+		"buying_power": money2(buying_power),
+		"pyr_spend_adds": f"{money2(pyramid_spend)} / {adds_used}",
+	}
+
+	html_email = build_pretty_html_email(
+		date_str=date_str,
+		subject_title=subject_title,
+		summary=summary,
+		existing_df=existing_df,
+		buy_df=buy_df,
+		diagnostics_text=body_details,
+		plan_file=PLAN_FILE,
+	)
 
     if smtp_ready():
         if EMAIL_MODE == "action_only" and subject.startswith("✅"):
