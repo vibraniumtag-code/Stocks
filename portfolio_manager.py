@@ -1286,12 +1286,13 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
             spend = float(alloc["EstCostTotal"].sum()) if not alloc.empty else 0.0
             cash_left = float(buying_power - spend)
 
-            for _, r in alloc.iterrows():
+                        for _, r in alloc.iterrows():
                 buy_n = int(r.get("BuyContracts", 0))
                 if buy_n <= 0:
                     continue
 
-                                ns = r.get("NewsScore", "")
+                # --- NEWS (optional display) ---
+                ns = r.get("NewsScore", "")
                 gr = r.get("GeoRisk", "")
                 sector = r.get("Sector", "")
                 industry = r.get("Industry", "")
@@ -1307,9 +1308,8 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
                     "BuyContracts": buy_n,
                     "EstCostTotal": round(float(r.get("EstCostTotal", 0.0)), 2),
 
-                    # --- NEWS (optional display) ---
-                    "Sector": str(sector) if sector is not None else "",
-                    "Industry": str(industry) if industry is not None else "",
+                    "Sector": "" if sector is None else str(sector),
+                    "Industry": "" if industry is None else str(industry),
                     "NewsScore": "" if ns is None or (isinstance(ns, float) and pd.isna(ns)) else num(ns, 3),
                     "GeoRisk": "" if gr is None or (isinstance(gr, float) and pd.isna(gr)) else num(gr, 3),
 
