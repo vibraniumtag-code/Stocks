@@ -1,5 +1,5 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
-HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,835.0,8.350000000000001,No action,Below pyramid thresholds
-HOLD,NFLX,NFLX 2026-02-20 P 88,2,0,0,HOLD,740.0,3.7,No action,Below pyramid thresholds
-HOLD,WMT,WMT 2026-02-27 C 120,2,0,0,HOLD,638.0,3.19,No action,Below pyramid thresholds
-HOLD,CRM,CRM 2026-02-20 P 230,1,0,0,HOLD,760.0,7.6,No action,Below pyramid thresholds
+HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,725.0,7.25,No action,Below pyramid thresholds
+HOLD,NFLX,NFLX 2026-02-20 P 88,2,0,0,HOLD,770.0,3.8499999999999996,No action,Below pyramid thresholds
+HOLD,WMT,WMT 2026-02-27 C 120,2,0,0,HOLD,645.0,3.225,No action,Below pyramid thresholds
+HOLD,CRM,CRM 2026-02-20 P 230,1,0,0,HOLD,795.0,7.95,No action,Below pyramid thresholds
