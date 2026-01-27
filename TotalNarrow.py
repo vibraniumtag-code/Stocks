@@ -340,7 +340,8 @@ def fetch_headlines_gdelt(query: str, lookback_days: int, max_headlines: int) ->
 
     titles: List[str] = []
     try:
-        r = requests.get(url, params=params, timeout=20)
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; TurtleScanner/1.0)"}
+        r = requests.get(url, params=params, headers=headers, timeout=20)
         if r.status_code != 200:
             _news_cache[cache_key] = []
             return []
