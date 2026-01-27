@@ -9,6 +9,22 @@ Nightly runner:
 - sends a PRETTY HTML EMAIL (HTML-only to avoid clients choosing text/plain)
 - optionally saves the same HTML to a file
 
+ENHANCED (optional):
+- Adds NEWS overlay with 3 tiers:
+  1) Ticker-specific news sentiment
+  2) Industry/Sector news sentiment
+  3) Geopolitical/Macro news sentiment
+- Supports modes:
+  - annotate: add columns only (no filtering)
+  - gate: filter trades using thresholds + geo risk cap
+  - rank: rank by NewsScore and optionally keep top N
+
+Default news provider:
+- GDELT (no API key)
+
+Optional:
+- Alpha Vantage for ticker headlines (fallback remains GDELT)
+
 Usage:
   python unified_turtle_entries_only.py --system 1 --allow-shorts 1 --top 300 \
     --save entries_tomorrow.csv --emit-checklist 1 --emit-html 1 --send-email 1
@@ -19,14 +35,28 @@ GitHub Secrets / env vars (SMTP):
 Optional env:
   EMAIL_MODE=always | entries_only   (default: always)
 
-Notes:
-- Email-safe HTML (inline styles).
-- Entries table is horizontally scrollable on mobile.
+NEWS env vars (optional):
+  NEWS_ENABLED=1
+  NEWS_MODE=annotate | gate | rank
+  NEWS_LOOKBACK_DAYS=3
+  NEWS_MAX_HEADLINES=30
+  NEWS_SLEEP_SEC=0.6
+  SENT_LONG_MIN=0.05
+  SENT_SHORT_MAX=-0.05
+  GEO_RISK_MAX=0.30
+  W_TICKER=0.55
+  W_INDUSTRY=0.25
+  W_GEO=0.20
+  NEWS_RANK_KEEP=0   (0=keep all)
+  GEO_QUERY="war OR sanctions OR tariff OR blockade OR ..."
+
+AlphaVantage (optional):
+  ALPHAVANTAGE_API_KEY=...
 """
 
-import os, re, argparse, html
-from datetime import datetime, date
-from typing import Optional, List
+import os, re, argparse, html, time
+from datetime import datetime, date, timedelta, timezone
+from typing import Optional, List, Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -40,6 +70,17 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
+
+# Optional deps for NEWS overlay
+try:
+    import requests
+except Exception:
+    requests = None
+
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+except Exception:
+    SentimentIntensityAnalyzer = None
 
 
 # ---------------------- Config defaults ----------------------
@@ -75,6 +116,36 @@ SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
 EMAIL_TO = os.getenv("EMAIL_TO", "").strip()
 
 EMAIL_MODE = os.getenv("EMAIL_MODE", "always").strip().lower()  # always | entries_only
+
+
+# ---------------------- NEWS / SENTIMENT (optional) ----------------------
+NEWS_ENABLED = int(os.getenv("NEWS_ENABLED", "0"))  # 1=on, 0=off
+NEWS_MODE = os.getenv("NEWS_MODE", "annotate").strip().lower()  # annotate | gate | rank
+
+ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
+
+NEWS_LOOKBACK_DAYS = int(os.getenv("NEWS_LOOKBACK_DAYS", "3"))
+NEWS_MAX_HEADLINES = int(os.getenv("NEWS_MAX_HEADLINES", "30"))
+NEWS_SLEEP_SEC = float(os.getenv("NEWS_SLEEP_SEC", "0.6"))
+
+SENT_LONG_MIN = float(os.getenv("SENT_LONG_MIN", "0.05"))
+SENT_SHORT_MAX = float(os.getenv("SENT_SHORT_MAX", "-0.05"))
+GEO_RISK_MAX = float(os.getenv("GEO_RISK_MAX", "0.30"))
+
+W_TICKER = float(os.getenv("W_TICKER", "0.55"))
+W_INDUSTRY = float(os.getenv("W_INDUSTRY", "0.25"))
+W_GEO = float(os.getenv("W_GEO", "0.20"))
+
+NEWS_RANK_KEEP = int(os.getenv("NEWS_RANK_KEEP", "0"))
+
+GEO_QUERY = os.getenv(
+    "GEO_QUERY",
+    (
+        "war OR missile OR sanctions OR tariff OR blockade OR oil supply OR OPEC OR "
+        "shipping disruption OR Red Sea OR Strait of Hormuz OR cyberattack OR coup OR "
+        "geopolitical tensions OR conflict escalation"
+    )
+).strip()
 
 
 # ---------------------- Helpers ----------------------
@@ -193,10 +264,8 @@ def send_pretty_email(subject: str, html_body: str) -> None:
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid()
 
-    # Explicit Content-Type (extra safety through some gateways)
     msg.replace_header("Content-Type", 'text/html; charset="utf-8"')
 
-    # Debug proof in logs
     print("SENDING MIME:", msg["Content-Type"])
     print("HTML PREVIEW (first 200 chars):", html_body[:200].replace("\n", " "))
 
@@ -214,6 +283,227 @@ def send_pretty_email(subject: str, html_body: str) -> None:
             server.send_message(msg)
 
 
+# ---------------------- NEWS / SENTIMENT helpers ----------------------
+_news_cache: Dict[Tuple[str, int], List[str]] = {}
+_info_cache: Dict[str, Dict[str, str]] = {}
+_sent_analyzer = SentimentIntensityAnalyzer() if SentimentIntensityAnalyzer else None
+
+
+def _utc_startdatetime_yyyymmddhhmmss(lookback_days: int) -> str:
+    dt = datetime.now(timezone.utc) - timedelta(days=max(1, lookback_days))
+    return dt.strftime("%Y%m%d%H%M%S")
+
+
+def _weighted_headline_sentiment(headlines: List[str]) -> float:
+    """
+    Returns a single sentiment score in [-1, +1] from a list of headlines (VADER compound).
+    Weighted slightly toward earlier items.
+    """
+    if not headlines or _sent_analyzer is None:
+        return float("nan")
+    scores = []
+    n = min(len(headlines), 20)
+    for i, h in enumerate(headlines[:n]):
+        s = _sent_analyzer.polarity_scores(h)["compound"]
+        w = 1.0 / (1.0 + 0.15 * i)
+        scores.append(s * w)
+    denom = sum(1.0 / (1.0 + 0.15 * i) for i in range(n))
+    return (sum(scores) / denom) if denom else float("nan")
+
+
+def fetch_headlines_gdelt(query: str, lookback_days: int, max_headlines: int) -> List[str]:
+    """
+    GDELT v2 DOC API. Returns titles.
+    No key required. Keep queries small; rate-limit politely.
+    """
+    if requests is None:
+        return []
+
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    cache_key = (f"gdelt:{query}", lookback_days)
+    if cache_key in _news_cache:
+        return _news_cache[cache_key][:max_headlines]
+
+    startdt = _utc_startdatetime_yyyymmddhhmmss(lookback_days)
+    url = "https://api.gdeltproject.org/api/v2/doc/doc"
+    params = {
+        "query": query,
+        "mode": "ArtList",
+        "format": "json",
+        "maxrecords": str(max(5, min(250, max_headlines))),
+        "startdatetime": startdt,
+        "sort": "HybridRel",
+    }
+
+    titles: List[str] = []
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code != 200:
+            _news_cache[cache_key] = []
+            return []
+        data = r.json() if r.text else {}
+        arts = data.get("articles", []) or []
+        for a in arts:
+            t = (a.get("title") or "").strip()
+            if t:
+                titles.append(t)
+        _news_cache[cache_key] = titles
+        return titles[:max_headlines]
+    except Exception:
+        _news_cache[cache_key] = []
+        return []
+    finally:
+        time.sleep(NEWS_SLEEP_SEC)
+
+
+def fetch_headlines_alpha_vantage_ticker(ticker: str, lookback_days: int, max_headlines: int) -> List[str]:
+    """
+    Optional: Alpha Vantage NEWS_SENTIMENT endpoint for ticker headlines.
+    If no key or request fails, return [] and caller can fallback to GDELT.
+    """
+    if requests is None or not ALPHAVANTAGE_API_KEY:
+        return []
+
+    cache_key = (f"av:{ticker}", lookback_days)
+    if cache_key in _news_cache:
+        return _news_cache[cache_key][:max_headlines]
+
+    url = "https://www.alphavantage.co/query"
+    params = {
+        "function": "NEWS_SENTIMENT",
+        "tickers": ticker,
+        "apikey": ALPHAVANTAGE_API_KEY,
+        "limit": str(max(10, min(200, max_headlines))),
+    }
+
+    titles: List[str] = []
+    try:
+        r = requests.get(url, params=params, timeout=25)
+        if r.status_code != 200:
+            _news_cache[cache_key] = []
+            return []
+        data = r.json() if r.text else {}
+        feed = data.get("feed", []) or []
+        for item in feed:
+            title = (item.get("title") or "").strip()
+            if title:
+                titles.append(title)
+        _news_cache[cache_key] = titles
+        return titles[:max_headlines]
+    except Exception:
+        _news_cache[cache_key] = []
+        return []
+    finally:
+        time.sleep(NEWS_SLEEP_SEC)
+
+
+def get_sector_industry(ticker: str) -> Tuple[str, str]:
+    """
+    Uses yfinance info (cached). Returns (sector, industry) or ("","").
+    """
+    if ticker in _info_cache:
+        sec = _info_cache[ticker].get("sector", "") or ""
+        ind = _info_cache[ticker].get("industry", "") or ""
+        return sec, ind
+
+    if yf is None:
+        _info_cache[ticker] = {"sector": "", "industry": ""}
+        return "", ""
+
+    try:
+        info = yf.Ticker(ticker).info or {}
+        sec = (info.get("sector") or "").strip()
+        ind = (info.get("industry") or "").strip()
+        _info_cache[ticker] = {"sector": sec, "industry": ind}
+        return sec, ind
+    except Exception:
+        _info_cache[ticker] = {"sector": "", "industry": ""}
+        return "", ""
+
+
+def compute_news_overlay(ticker: str) -> Dict[str, object]:
+    """
+    Returns dict with:
+      TickerSent, IndustrySent, GeoSent, GeoRisk, NewsScore,
+      HeadlinesTicker, HeadlinesIndustry, HeadlinesGeo, Sector, Industry
+    """
+    # If news disabled or deps missing, return blanks
+    if NEWS_ENABLED != 1 or requests is None or _sent_analyzer is None:
+        sec, ind = get_sector_industry(ticker)
+        return {
+            "Sector": sec, "Industry": ind,
+            "TickerSent": "", "IndustrySent": "", "GeoSent": "", "GeoRisk": "",
+            "NewsScore": "", "HeadlinesTicker": "", "HeadlinesIndustry": "", "HeadlinesGeo": ""
+        }
+
+    sec, ind = get_sector_industry(ticker)
+
+    # --- Ticker headlines: AlphaVantage preferred, else GDELT ---
+    ticker_titles = fetch_headlines_alpha_vantage_ticker(ticker, NEWS_LOOKBACK_DAYS, NEWS_MAX_HEADLINES)
+    if not ticker_titles:
+        # make GDELT query robust: prefer $TICKER or company mentions
+        ticker_titles = fetch_headlines_gdelt(f"{ticker} stock OR {ticker} shares OR {ticker}", NEWS_LOOKBACK_DAYS, NEWS_MAX_HEADLINES)
+
+    # --- Industry headlines: use industry first, else sector ---
+    industry_query = ""
+    if ind:
+        industry_query = f"({ind})"
+    elif sec:
+        industry_query = f"({sec}) industry"
+    industry_titles = fetch_headlines_gdelt(industry_query, NEWS_LOOKBACK_DAYS, NEWS_MAX_HEADLINES) if industry_query else []
+
+    # --- Geo / macro headlines ---
+    geo_titles = fetch_headlines_gdelt(GEO_QUERY, NEWS_LOOKBACK_DAYS, NEWS_MAX_HEADLINES) if GEO_QUERY else []
+
+    t_sent = _weighted_headline_sentiment(ticker_titles)
+    i_sent = _weighted_headline_sentiment(industry_titles)
+    g_sent = _weighted_headline_sentiment(geo_titles)
+
+    # GeoRisk: treat NEGATIVE geo sentiment as "risk" (0..1-ish)
+    geo_risk = max(0.0, -g_sent) if (g_sent == g_sent) else float("nan")
+
+    # Combine: if a component is NaN, treat as 0 (neutral) so it doesn't wipe the score
+    t0 = 0.0 if (t_sent != t_sent) else float(t_sent)
+    i0 = 0.0 if (i_sent != i_sent) else float(i_sent)
+    g0 = 0.0 if (g_sent != g_sent) else float(g_sent)
+
+    news_score = (W_TICKER * t0) + (W_INDUSTRY * i0) + (W_GEO * g0)
+
+    def _join3(xs: List[str]) -> str:
+        return " | ".join([s for s in (xs or [])[:3] if s])
+
+    return {
+        "Sector": sec,
+        "Industry": ind,
+        "TickerSent": round(t_sent, 3) if (t_sent == t_sent) else "",
+        "IndustrySent": round(i_sent, 3) if (i_sent == i_sent) else "",
+        "GeoSent": round(g_sent, 3) if (g_sent == g_sent) else "",
+        "GeoRisk": round(geo_risk, 3) if (geo_risk == geo_risk) else "",
+        "NewsScore": round(news_score, 3),
+        "HeadlinesTicker": _join3(ticker_titles),
+        "HeadlinesIndustry": _join3(industry_titles),
+        "HeadlinesGeo": _join3(geo_titles),
+    }
+
+
+def news_gate_pass(action: str, news_score: float, geo_risk: float) -> bool:
+    """
+    Gating logic used when NEWS_MODE=gate.
+    """
+    # If geo risk is NaN, don't block on geo. If set, enforce cap.
+    if geo_risk == geo_risk and geo_risk > GEO_RISK_MAX:
+        return False
+
+    if action == "BUY_CALL":
+        return (news_score == news_score) and (news_score >= SENT_LONG_MIN)
+    if action == "BUY_PUT":
+        return (news_score == news_score) and (news_score <= SENT_SHORT_MAX)
+    return True
+
+
 # ---------------------- Main pipeline ----------------------
 def generate_new_entries(top: int,
                          system: int = 1,
@@ -228,6 +518,11 @@ def generate_new_entries(top: int,
                          opt_tp: float = 1.00) -> pd.DataFrame:
     if yf is None:
         raise RuntimeError("yfinance is required. pip install yfinance")
+
+    # If news requested but deps missing, fail loudly so you notice in Actions logs
+    if NEWS_ENABLED == 1 and (requests is None or SentimentIntensityAnalyzer is None):
+        raise RuntimeError("NEWS_ENABLED=1 requires: pip install requests vaderSentiment")
+
     entry_lb, exit_lb = (20,10) if system==1 else (55,20)
 
     # ------------------ FILTER CONFIG ------------------
@@ -281,6 +576,9 @@ def generate_new_entries(top: int,
             strong_short = px <= (entry_low  - BREAKOUT_BUFFER_ATR * atrv)
 
             action = None
+            opt_type = ""
+            target_delta = 0.0
+
             if long_entry.iloc[-1] and px > sma200 and strong_long:
                 action = "BUY_CALL"
                 stop_under = round(px - k_stop_atr*atrv, 2)
@@ -295,6 +593,16 @@ def generate_new_entries(top: int,
                 target_delta = OPT_ITM_DELTA_PUT
             else:
                 continue
+
+            # ---------- NEWS overlay (annotate/gate/rank) ----------
+            news = compute_news_overlay(t)
+            news_score = float(news["NewsScore"]) if str(news.get("NewsScore","")) != "" else float("nan")
+            geo_risk = float(news["GeoRisk"]) if str(news.get("GeoRisk","")) != "" else float("nan")
+
+            if NEWS_ENABLED == 1 and NEWS_MODE == "gate":
+                if not news_gate_pass(action, news_score, geo_risk):
+                    continue
+            # ------------------------------------------------------
 
             # Option selection
             expiry = find_target_expiration(t, opt_min_dte, opt_max_dte, opt_target_dte)
@@ -340,11 +648,46 @@ def generate_new_entries(top: int,
                 "OptionSymbol": option_symbol,
                 "Delta": delta,
                 "IV": iv,
+
+                # NEWS fields
+                "Sector": news.get("Sector",""),
+                "Industry": news.get("Industry",""),
+                "TickerSent": news.get("TickerSent",""),
+                "IndustrySent": news.get("IndustrySent",""),
+                "GeoSent": news.get("GeoSent",""),
+                "GeoRisk": news.get("GeoRisk",""),
+                "NewsScore": news.get("NewsScore",""),
+                "HeadlinesTicker": news.get("HeadlinesTicker",""),
+                "HeadlinesIndustry": news.get("HeadlinesIndustry",""),
+                "HeadlinesGeo": news.get("HeadlinesGeo",""),
             })
         except Exception:
             continue
 
     out = pd.DataFrame(rows)
+
+    # If NEWS_MODE=rank, reorder and optionally keep top N
+    if not out.empty and NEWS_ENABLED == 1 and NEWS_MODE == "rank" and "NewsScore" in out.columns:
+        def _to_float(x):
+            try:
+                return float(x)
+            except Exception:
+                return 0.0
+
+        # Rank: Calls want higher NewsScore, Puts want lower NewsScore
+        out["__ns"] = out["NewsScore"].map(_to_float)
+        out["__rank_score"] = np.where(out["Action"]=="BUY_CALL", out["__ns"], -out["__ns"])
+
+        # Keep your Action ordering first, then rank score desc
+        order = pd.CategoricalDtype(categories=["BUY_CALL","BUY_PUT"], ordered=True)
+        out["ActionOrder"] = out["Action"].astype(order)
+        out = out.sort_values(["ActionOrder","__rank_score"], ascending=[True, False]).drop(columns=["ActionOrder"])
+
+        if NEWS_RANK_KEEP and NEWS_RANK_KEEP > 0:
+            out = out.head(NEWS_RANK_KEEP)
+
+        out = out.drop(columns=["__ns","__rank_score"], errors="ignore")
+
     if not out.empty:
         order = pd.CategoricalDtype(categories=["BUY_CALL","BUY_PUT"], ordered=True)
         out["ActionOrder"] = out["Action"].astype(order)
@@ -372,13 +715,22 @@ def print_checklist(df: pd.DataFrame, date_str: str) -> str:
     for _, r in df.iterrows():
         delta_txt = f", Δ {_fmt(r['Delta'],3)}" if str(r.get("Delta","")) not in ("", "nan") else ""
         iv_txt = f", IV {_fmt(r['IV'],3)}" if str(r.get("IV","")) not in ("", "nan") else ""
+
+        # News summary (short)
+        ns = r.get("NewsScore", "")
+        gr = r.get("GeoRisk", "")
+        news_txt = ""
+        if str(ns) not in ("", "nan"):
+            news_txt = f"\n  NewsScore {_fmt(ns,3)} | GeoRisk {_fmt(gr,3)}"
+
         lines.append(
             f"• {r['Ticker']} — {r['Action']} ({r['EntryPlan']})\n"
             f"  Spot {_fmt(r['SpotClose'])} | ATR {_fmt(r['ATR'],3)}\n"
             f"  Underlying SL {_fmt(r['StopUnderlying'])} / TP {_fmt(r['TargetUnderlying'])}\n"
             f"  Option: {r['OptionType']} {_fmt(r['OptionStrike'])} exp {r['Expiry']} "
             f"[{r['OptionSymbol']}] @ last {_fmt(r['OptionLast'])} | SL {_fmt(r['OptionStop'])} / TP {_fmt(r['OptionTarget'])}"
-            f"{delta_txt}{iv_txt}\n"
+            f"{delta_txt}{iv_txt}"
+            f"{news_txt}\n"
         )
     text = "\n".join(lines)
     print(text)
@@ -408,7 +760,7 @@ def build_pretty_html_email(df: pd.DataFrame, checklist_text: str, date_str: str
         try:
             if col in {"SpotClose","StopUnderlying","TargetUnderlying","OptionStrike","OptionLast","OptionStop","OptionTarget"}:
                 return f"{float(v):.2f}"
-            if col in {"ATR","Delta","IV"}:
+            if col in {"ATR","Delta","IV","TickerSent","IndustrySent","GeoSent","GeoRisk","NewsScore"}:
                 return f"{float(v):.3f}"
         except Exception:
             pass
@@ -416,10 +768,10 @@ def build_pretty_html_email(df: pd.DataFrame, checklist_text: str, date_str: str
 
     cols = [
         "Ticker","Action","SpotClose","ATR","StopUnderlying","TargetUnderlying",
-        "Expiry","OptionType","OptionStrike","OptionLast","OptionStop","OptionTarget","OptionSymbol","Delta","IV"
+        "Expiry","OptionType","OptionStrike","OptionLast","OptionStop","OptionTarget","OptionSymbol","Delta","IV",
+        "Sector","Industry","TickerSent","IndustrySent","GeoSent","GeoRisk","NewsScore"
     ]
 
-    # Build table
     if df is None or df.empty:
         table_html = """
           <div style="padding:12px 14px;border:1px solid #e5e7eb;border-radius:12px;background:#f9fafb;font-size:13px;">
@@ -433,7 +785,10 @@ def build_pretty_html_email(df: pd.DataFrame, checklist_text: str, date_str: str
             for c in cols
         ])
 
-        numeric_right = {"SpotClose","ATR","StopUnderlying","TargetUnderlying","OptionStrike","OptionLast","OptionStop","OptionTarget","Delta","IV"}
+        numeric_right = {
+            "SpotClose","ATR","StopUnderlying","TargetUnderlying","OptionStrike","OptionLast","OptionStop","OptionTarget",
+            "Delta","IV","TickerSent","IndustrySent","GeoSent","GeoRisk","NewsScore"
+        }
 
         rows_html = []
         for _, r in df[cols].iterrows():
@@ -459,7 +814,6 @@ def build_pretty_html_email(df: pd.DataFrame, checklist_text: str, date_str: str
           </div>
         """
 
-    # Summary cards
     cards = f"""
       <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:12px 0;margin:0 0 12px 0;">
         <tr>
@@ -479,7 +833,6 @@ def build_pretty_html_email(df: pd.DataFrame, checklist_text: str, date_str: str
       </table>
     """
 
-    # Run command
     usage = (
         f"python unified_turtle_entries_only.py --system {args.system} --allow-shorts {int(bool(args.allow_shorts))} "
         f"--top {args.top} --save {html.escape(args.save)} --emit-checklist {int(args.emit_checklist)} "
@@ -493,17 +846,14 @@ def build_pretty_html_email(df: pd.DataFrame, checklist_text: str, date_str: str
   <div style="width:100%;padding:24px 12px;background:#f6f7fb;">
     <div style="max-width:980px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
 
-      <!-- Header -->
       <div style="background:#0b1220;color:#ffffff;padding:18px 22px;">
         <div style="font-size:18px;font-weight:900;line-height:1.25;">🐢 Turtle Scanner — New Entries</div>
         <div style="font-size:12px;opacity:.9;margin-top:6px;">For next open · {safe_date}</div>
       </div>
 
-      <!-- Content -->
       <div style="padding:18px 22px;">
         {cards}
 
-        <!-- Run command -->
         <div style="margin:12px 0 16px 0;">
           <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">▶️ Run Command</div>
           <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px;font-size:12px;line-height:1.45;">
@@ -511,14 +861,12 @@ def build_pretty_html_email(df: pd.DataFrame, checklist_text: str, date_str: str
           </div>
         </div>
 
-        <!-- Entries table -->
         <div style="margin:0 0 16px 0;">
-          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">📈 Entries</div>
+          <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">📈 Entries (with News Overlay)</div>
           {table_html}
           <div style="margin-top:8px;font-size:12px;color:#6b7280;">Tip: table scrolls horizontally on mobile.</div>
         </div>
 
-        <!-- Checklist -->
         <div style="margin:0 0 6px 0;">
           <div style="font-size:13px;font-weight:900;margin:0 0 8px 0;">🧾 Checklist Output</div>
           <div style="background:#0b1220;color:#e5e7eb;border:1px solid #1f2a44;border-radius:12px;overflow:hidden;">
@@ -531,7 +879,6 @@ def build_pretty_html_email(df: pd.DataFrame, checklist_text: str, date_str: str
 
       </div>
 
-      <!-- Footer -->
       <div style="padding:14px 22px;background:#fbfbfd;border-top:1px solid #eef0f6;font-size:12px;color:#6b7280;">
         Generated by unified_turtle_entries_only.py · {safe_date}
       </div>
