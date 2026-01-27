@@ -1280,7 +1280,7 @@ def main():
         if EMAIL_MODE == "action_only" and subject.startswith("✅"):
             print(f"EMAIL_MODE=action_only and no action — skipping email. Plan saved: {PLAN_FILE}")
             return
-        send_pretty_email(subject, html_body)
+        send_pretty_email(subject, html_email)
         print(f"Email sent to {EMAIL_TO}. Plan saved: {PLAN_FILE}")
     else:
         print(subject)
