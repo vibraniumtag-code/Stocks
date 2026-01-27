@@ -74,7 +74,21 @@ import yfinance as yf
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 
+# =========================
+# NEWS (from scanner) — display + optional buy risk shaping
+# =========================
+SHOW_NEWS_IN_EMAIL = env_str("SHOW_NEWS_IN_EMAIL", "true").lower() == "true"
 
+MANAGER_NEWS_MODE = env_str("MANAGER_NEWS_MODE", "annotate").lower()  # annotate | gate | bias
+
+NEWS_LONG_MIN = env_float("NEWS_LONG_MIN", 0.05)
+NEWS_SHORT_MAX = env_float("NEWS_SHORT_MAX", -0.05)
+
+MANAGER_GEO_RISK_MAX = env_float("MANAGER_GEO_RISK_MAX", 0.40)
+
+NEWS_BIAS_ALPHA = env_float("NEWS_BIAS_ALPHA", 0.80)
+NEWS_BIAS_CLIP_MIN = env_float("NEWS_BIAS_CLIP_MIN", 0.50)
+NEWS_BIAS_CLIP_MAX = env_float("NEWS_BIAS_CLIP_MAX", 1.50)
 # =========================
 # SAFE ENV PARSERS
 # =========================
