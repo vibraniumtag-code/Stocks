@@ -1,6 +1,6 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
-HOLD,JNJ,JNJ 2026-03-06 C 230,1,0,0,HOLD,335.0,3.35,No action,Below pyramid thresholds
+HOLD,JNJ,JNJ 2026-03-06 C 230,1,0,0,HOLD,345.0,3.45,No action,Below pyramid thresholds
 HOLD,UPS,UPS 2026-03-06 C 110,2,0,0,HOLD,715.0,3.575,No action,Below pyramid thresholds
 SELL,UNH,UNH 2026-02-26 C 285,1,1,0,SELL_ALL,1140.0,11.4,Structure/Trim,Selling/Trimming takes priority
-SELL,UNH,UNH 2026-03-06 C 375,1,1,0,SELL_ALL,88.5,0.885,Structure/Trim,Selling/Trimming takes priority
-SELL,NFLX,NFLX 2026-02-20 P 88,2,1,0,SELL_1,940.0,4.699999999999999,Structure/Trim,Selling/Trimming takes priority
+SELL,UNH,UNH 2026-03-06 C 375,1,1,0,SELL_ALL,88.0,0.88,Structure/Trim,Selling/Trimming takes priority
+SELL,NFLX,NFLX 2026-02-20 P 88,2,1,0,SELL_1,940.0,4.7,Structure/Trim,Selling/Trimming takes priority
