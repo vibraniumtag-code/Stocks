@@ -119,7 +119,7 @@ EMAIL_MODE = os.getenv("EMAIL_MODE", "always").strip().lower()  # always | entri
 
 
 # ---------------------- NEWS / SENTIMENT (optional) ----------------------
-NEWS_ENABLED = int(os.getenv("NEWS_ENABLED", "0"))  # 1=on, 0=off
+NEWS_ENABLED = int(os.getenv("NEWS_ENABLED", "1"))  # 1=on, 0=off
 NEWS_MODE = os.getenv("NEWS_MODE", "annotate").strip().lower()  # annotate | gate | rank
 
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
