@@ -1,5 +1,8 @@
-Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
-HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,775.0,7.75,No action,Below pyramid thresholds
-HOLD,NFLX,NFLX 2026-02-20 P 88,2,0,0,HOLD,770.0,3.85,No action,Below pyramid thresholds
-HOLD,WMT,WMT 2026-02-27 C 120,2,0,0,HOLD,614.0,3.07,No action,Below pyramid thresholds
-HOLD,CRM,CRM 2026-02-20 P 230,1,0,0,HOLD,780.0,7.8,No action,Below pyramid thresholds
+Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,ATR%,BuyContracts,EstCostTotal
+SELL,UNH,UNH 2026-02-26 C 285,1.0,1.0,0.0,SELL_ALL,1140.0,11.4,Structure/Trim,Selling/Trimming takes priority,,,,,,,
+SELL,UNH,UNH 2026-03-06 C 375,1.0,1.0,0.0,SELL_ALL,109.0,1.09,Structure/Trim,Selling/Trimming takes priority,,,,,,,
+SELL,NFLX,NFLX 2026-02-20 P 88,2.0,1.0,0.0,SELL_1,940.0,4.699999999999999,Structure/Trim,Selling/Trimming takes priority,,,,,,,
+SELL,WMT,WMT 2026-02-27 C 120,2.0,1.0,0.0,SELL_1,443.0,2.215,Structure/Trim,Selling/Trimming takes priority,,,,,,,
+HOLD,CRM,CRM 2026-02-20 P 230,1.0,0.0,0.0,HOLD,897.5,8.975000000000001,No action,"No pyramid budget (need $897.50, left $167.65)",,,,,,,
+BUY,JNJ,,,,,,,,Vol-adjusted allocation (1/ATR%) funded by buying power (freed + account cash),,BUY_CALL,2026-03-06,JNJ260306C00230000,1.70,1.83%,6.0,1020.0
+BUY,UPS,,,,,,,,Vol-adjusted allocation (1/ATR%) funded by buying power (freed + account cash),,BUY_CALL,2026-03-06,UPS260306C00110000,3.20,2.02%,4.0,1280.0
