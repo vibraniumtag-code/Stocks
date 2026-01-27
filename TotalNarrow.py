@@ -486,6 +486,10 @@ def compute_news_overlay(ticker: str) -> Dict[str, object]:
         "HeadlinesTicker": _join3(ticker_titles),
         "HeadlinesIndustry": _join3(industry_titles),
         "HeadlinesGeo": _join3(geo_titles),
+        "TickerHL": len(ticker_titles),
+        "IndustryHL": len(industry_titles),
+        "GeoHL": len(geo_titles)
+
     }
 
 
@@ -600,6 +604,8 @@ def generate_new_entries(top: int,
             geo_risk = float("nan")
             try:
                 news = compute_news_overlay(t) or {}
+                print(f"NEWS {t}: ht={len(ticker_titles)} hi={len(industry_titles)} hg={len(geo_titles)} score={news_score}")
+
                 ns = news.get("NewsScore", "")
                 gr = news.get("GeoRisk", "")
                 news_score = float(ns) if str(ns) not in ("", "nan") else float("nan")
