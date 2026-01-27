@@ -37,6 +37,7 @@ Optional env:
 
 NEWS env vars (optional):
   NEWS_ENABLED=1
+  NEWS_DEBUG=1
   NEWS_MODE=annotate | gate | rank
   NEWS_LOOKBACK_DAYS=3
   NEWS_MAX_HEADLINES=30
