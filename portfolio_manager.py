@@ -34,6 +34,29 @@ Env vars (optional):
 EMAIL_MODE:
   always | action_only
 """
+# =========================
+# NEWS (from scanner) — display + optional buy risk shaping
+# =========================
+SHOW_NEWS_IN_EMAIL = env_str("SHOW_NEWS_IN_EMAIL", "true").lower() == "true"
+
+# How to use news for NEW BUYS only (existing positions are managed by structure/ATR)
+# annotate = show only, no gating/weighting
+# gate     = drop candidates with bad geo/news alignment
+# bias     = keep all candidates but bias allocation weights using news score
+MANAGER_NEWS_MODE = env_str("MANAGER_NEWS_MODE", "annotate").lower()  # annotate | gate | bias
+
+# Directional sentiment thresholds (only used when MANAGER_NEWS_MODE=gate)
+NEWS_LONG_MIN = env_float("NEWS_LONG_MIN", 0.05)     # calls need >= this
+NEWS_SHORT_MAX = env_float("NEWS_SHORT_MAX", -0.05)  # puts need <= this
+
+# Geo risk circuit breaker for new buys (used in gate, and as a soft penalty in bias)
+MANAGER_GEO_RISK_MAX = env_float("MANAGER_GEO_RISK_MAX", 0.40)
+
+# Bias strength (only used when MANAGER_NEWS_MODE=bias)
+# Weight multiplier is clipped to [NEWS_BIAS_CLIP_MIN, NEWS_BIAS_CLIP_MAX]
+NEWS_BIAS_ALPHA = env_float("NEWS_BIAS_ALPHA", 0.80)  # bigger = stronger tilt
+NEWS_BIAS_CLIP_MIN = env_float("NEWS_BIAS_CLIP_MIN", 0.50)
+NEWS_BIAS_CLIP_MAX = env_float("NEWS_BIAS_CLIP_MAX", 1.50)
 
 import os
 import re
@@ -584,22 +607,104 @@ def allocate_buying_power_vol_adj(
 ) -> pd.DataFrame:
     """
     Allocate buying_power across candidates using weights = 1/ATR%.
-    Returns DF with BuyContracts + EstCostTotal.
+    Optional news usage:
+      - MANAGER_NEWS_MODE=gate: drop bad geo / misaligned sentiment
+      - MANAGER_NEWS_MODE=bias: multiply weight by directional news factor
+      - annotate: ignore news for sizing (still carried through for display)
+    Returns DF with BuyContracts + EstCostTotal (+ carries News columns if present).
     """
     if cand is None or cand.empty or buying_power <= 0:
         return pd.DataFrame()
 
     work = cand.copy()
-    work = work.replace([np.inf, -np.inf], np.nan).dropna(subset=["EstCost1", "ATRpct"])
+    work = work.replace([np.inf, -np.inf], np.nan)
+
+    # Required for sizing
+    work = work.dropna(subset=["EstCost1", "ATRpct"])
     work = work[np.isfinite(work["EstCost1"]) & (work["EstCost1"] > 0)].copy()
     work = work[np.isfinite(work["ATRpct"]) & (work["ATRpct"] > 0)].copy()
     if work.empty:
         return pd.DataFrame()
 
-    # prefer lower ATR% (smoother)
+    # Ensure numeric if present
+    if "NewsScore" in work.columns:
+        work["NewsScore"] = pd.to_numeric(work["NewsScore"], errors="coerce")
+    if "GeoRisk" in work.columns:
+        work["GeoRisk"] = pd.to_numeric(work["GeoRisk"], errors="coerce")
+
+    # ---------------------------
+    # NEWS MODE: gate (optional)
+    # ---------------------------
+    if MANAGER_NEWS_MODE == "gate":
+        before = len(work)
+
+        # Geo hard cap (drop) if present
+        if "GeoRisk" in work.columns:
+            work = work[(work["GeoRisk"].isna()) | (work["GeoRisk"] <= MANAGER_GEO_RISK_MAX)].copy()
+
+        # Directional sentiment gating if NewsScore present
+        if "NewsScore" in work.columns and "Action" in work.columns:
+            def pass_row(r) -> bool:
+                a = str(r.get("Action", "")).upper()
+                ns = r.get("NewsScore", np.nan)
+                if not np.isfinite(ns):
+                    return True  # don't block if missing
+                if a == "BUY_CALL":
+                    return ns >= NEWS_LONG_MIN
+                if a == "BUY_PUT":
+                    return ns <= NEWS_SHORT_MAX
+                return True
+
+            mask = work.apply(pass_row, axis=1)
+            work = work[mask].copy()
+
+        report_lines.append(f"DIAG: News gate: {before} -> {len(work)} candidates")
+
+        if work.empty:
+            report_lines.append("DIAG: All candidates removed by MANAGER_NEWS_MODE=gate.")
+            return pd.DataFrame()
+
+    # Prefer lower ATR% first (then ticker) before trimming to max slots
     work = work.sort_values(["ATRpct", "Ticker"]).head(max_new_per_run).copy()
 
-    work["Weight"] = 1.0 / work["ATRpct"].astype(float)
+    # Base weight = 1/ATR%
+    work["WeightBase"] = 1.0 / work["ATRpct"].astype(float)
+
+    # ---------------------------
+    # NEWS MODE: bias (optional)
+    # ---------------------------
+    work["NewsAdj"] = 1.0
+    if MANAGER_NEWS_MODE == "bias" and "NewsScore" in work.columns and "Action" in work.columns:
+        def adj(r):
+            a = str(r.get("Action", "")).upper()
+            ns = r.get("NewsScore", np.nan)
+            gr = r.get("GeoRisk", np.nan)
+
+            if not np.isfinite(ns):
+                ns = 0.0
+
+            # Directional: calls prefer +news, puts prefer -news
+            directional = ns if a == "BUY_CALL" else (-ns if a == "BUY_PUT" else 0.0)
+
+            # Convert to multiplier
+            m = 1.0 + (NEWS_BIAS_ALPHA * float(directional))
+
+            # Soft geo penalty (not a hard block)
+            if np.isfinite(gr) and gr > MANAGER_GEO_RISK_MAX:
+                m *= 0.60  # dampen sizing when geo is elevated
+
+            # Clip
+            m = max(NEWS_BIAS_CLIP_MIN, min(NEWS_BIAS_CLIP_MAX, m))
+            return m
+
+        work["NewsAdj"] = work.apply(adj, axis=1)
+        report_lines.append(
+            "DIAG: News bias enabled (Weight = (1/ATR%) * NewsAdj). "
+            f"alpha={NEWS_BIAS_ALPHA} clip=[{NEWS_BIAS_CLIP_MIN},{NEWS_BIAS_CLIP_MAX}]"
+        )
+
+    work["Weight"] = work["WeightBase"] * work["NewsAdj"]
+
     wsum = float(work["Weight"].sum())
     if not np.isfinite(wsum) or wsum <= 0:
         return pd.DataFrame()
@@ -617,7 +722,7 @@ def allocate_buying_power_vol_adj(
 
     work["EstCostTotal"] = (work["BuyContracts"] * work["EstCost1"]).round(2)
 
-    # Trim if overspend (due to min-1 + rounding)
+    # Trim if overspend
     guard = 10000
     while float(work["EstCostTotal"].sum()) > buying_power and guard > 0:
         guard -= 1
@@ -640,8 +745,6 @@ def allocate_buying_power_vol_adj(
         f"spend={float(work['EstCostTotal'].sum()):.2f} buying_power={buying_power:.2f}"
     )
     return work
-
-
 # =========================
 # OPTION PRICING FROM option_name (positions.csv)
 # =========================
@@ -1188,6 +1291,11 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
                 if buy_n <= 0:
                     continue
 
+                                ns = r.get("NewsScore", "")
+                gr = r.get("GeoRisk", "")
+                sector = r.get("Sector", "")
+                industry = r.get("Industry", "")
+
                 buy_rows.append({
                     "Type": "BUY",
                     "Ticker": str(r["Ticker"]).upper(),
@@ -1198,6 +1306,13 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
                     "ATR%": f"{float(r.get('ATRpct'))*100:.2f}%",
                     "BuyContracts": buy_n,
                     "EstCostTotal": round(float(r.get("EstCostTotal", 0.0)), 2),
+
+                    # --- NEWS (optional display) ---
+                    "Sector": str(sector) if sector is not None else "",
+                    "Industry": str(industry) if industry is not None else "",
+                    "NewsScore": "" if ns is None or (isinstance(ns, float) and pd.isna(ns)) else num(ns, 3),
+                    "GeoRisk": "" if gr is None or (isinstance(gr, float) and pd.isna(gr)) else num(gr, 3),
+
                     "Reason": "Vol-adjusted allocation (1/ATR%) funded by buying power (freed + account cash)",
                 })
 
@@ -1275,11 +1390,16 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
         existing_df["PositionValue"] = existing_df["PositionValue"].apply(money0)
         existing_df["OptionMark"] = existing_df["OptionMark"].apply(lambda x: "" if x == "" else num(x, 2))
 
-    buy_df = plan_df[plan_df["Type"].isin(["BUY"])].copy()
+        buy_df = plan_df[plan_df["Type"].isin(["BUY"])].copy()
     if not buy_df.empty:
-        cols = ["Type", "Ticker", "Strategy", "Expiry", "OptionSymbol", "OptionLast", "ATR%", "BuyContracts", "EstCostTotal", "Reason"]
-        buy_df = buy_df[cols]
-        buy_df["EstCostTotal"] = buy_df["EstCostTotal"].apply(money2)
+        base_cols = ["Type", "Ticker", "Strategy", "Expiry", "OptionSymbol", "OptionLast", "ATR%", "BuyContracts", "EstCostTotal"]
+        news_cols = ["Sector", "Industry", "NewsScore", "GeoRisk"] if SHOW_NEWS_IN_EMAIL else []
+        cols = base_cols + news_cols + ["Reason"]
+        cols = [c for c in cols if c in buy_df.columns]
+        buy_df = buy_df[cols].copy()
+        if "EstCostTotal" in buy_df.columns:
+            buy_df["EstCostTotal"] = buy_df["EstCostTotal"].apply(money2)
+
 
     # subject: include counts
     sell_ct = 0 if plan_df is None or plan_df.empty else int((plan_df["Type"] == "SELL").sum())
