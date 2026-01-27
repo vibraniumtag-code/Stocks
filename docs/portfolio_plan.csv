@@ -1,6 +1,6 @@
-Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,ATR%,BuyContracts,EstCostTotal
-SELL,UNH,UNH 2026-02-26 C 285,1.0,1.0,0.0,SELL_ALL,1140.0,11.4,Structure/Trim,Selling/Trimming takes priority,,,,,,,
-SELL,UNH,UNH 2026-03-06 C 375,1.0,1.0,0.0,SELL_ALL,195.0,1.9500000000000002,Structure/Trim,Selling/Trimming takes priority,,,,,,,
-HOLD,NFLX,NFLX 2026-02-20 P 88,2.0,0.0,0.0,HOLD,965.0,4.825,No action,Below pyramid thresholds,,,,,,,
-BUY,JNJ,,,,,,,,Vol-adjusted allocation (1/ATR%) funded by buying power (freed + account cash),,BUY_CALL,2026-03-06,JNJ260306C00230000,3.30,1.82%,3.0,990.0
-BUY,UPS,,,,,,,,Vol-adjusted allocation (1/ATR%) funded by buying power (freed + account cash),,BUY_CALL,2026-03-06,UPS260306C00110000,4.26,2.02%,2.0,852.0
+Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
+HOLD,JNJ,JNJ 2026-03-06 C 230,1,0,0,HOLD,335.0,3.35,No action,Below pyramid thresholds
+HOLD,UPS,UPS 2026-03-06 C 110,2,0,0,HOLD,715.0,3.575,No action,Below pyramid thresholds
+SELL,UNH,UNH 2026-02-26 C 285,1,1,0,SELL_ALL,1140.0,11.4,Structure/Trim,Selling/Trimming takes priority
+SELL,UNH,UNH 2026-03-06 C 375,1,1,0,SELL_ALL,88.5,0.885,Structure/Trim,Selling/Trimming takes priority
+SELL,NFLX,NFLX 2026-02-20 P 88,2,1,0,SELL_1,940.0,4.699999999999999,Structure/Trim,Selling/Trimming takes priority
