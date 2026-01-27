@@ -1252,28 +1252,29 @@ def main():
         f"Plan saved: {PLAN_FILE} and {PLAN_DOCS_FILE}",
     ]
 
-	# ---- build "nice" email using pretty shell
-	date_str = datetime.now().strftime("%Y-%m-%d")
-	body_details = "\n".join(report_lines)
+    # ---- build "nice" email using pretty shell
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    body_details = "\n".join(report_lines)
 
-	summary = {
-		"total": money2(total_value),
-		"freed": money2(freed_cash),
-		"account_cash": money2(account_cash),
-		"cash_reserve": money2(CASH_RESERVE),
-		"buying_power": money2(buying_power),
-		"pyr_spend_adds": f"{money2(pyramid_spend)} / {adds_used}",
-	}
+    summary = {
+        "total": money2(total_value),
+        "freed": money2(freed_cash),
+        "account_cash": money2(account_cash),
+        "cash_reserve": money2(CASH_RESERVE),
+        "buying_power": money2(buying_power),
+        "pyr_spend_adds": f"{money2(pyramid_spend)} / {adds_used}",
+    }
 
-	html_email = build_pretty_html_email(
-		date_str=date_str,
-		subject_title=subject_title,
-		summary=summary,
-		existing_df=existing_df,
-		buy_df=buy_df,
-		diagnostics_text=body_details,
-		plan_file=PLAN_FILE,
-	)
+    html_email = build_pretty_html_email(
+        date_str=date_str,
+        subject_title=subject_title,
+        summary=summary,
+        existing_df=existing_df,
+        buy_df=buy_df,
+        diagnostics_text=body_details,
+        plan_file=PLAN_FILE,
+    )
+
 
     if smtp_ready():
         if EMAIL_MODE == "action_only" and subject.startswith("✅"):
