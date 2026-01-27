@@ -138,14 +138,9 @@ W_INDUSTRY = float(os.getenv("W_INDUSTRY", "0.25"))
 W_GEO = float(os.getenv("W_GEO", "0.20"))
 
 NEWS_RANK_KEEP = int(os.getenv("NEWS_RANK_KEEP", "0"))
-NEWS_DEBUG = int(os.getenv("NEWS_DEBUG", "0"))
+NEWS_DEBUG = int(os.getenv("NEWS_DEBUG", "1"))
 
-print("NEWS_STATUS:",
-      "NEWS_ENABLED=", NEWS_ENABLED,
-      "NEWS_MODE=", NEWS_MODE,
-      "requests_ok=", requests is not None,
-      "vader_ok=", _sent_analyzer is not None)
-      
+
       
 GEO_QUERY = os.getenv(
     "GEO_QUERY",
