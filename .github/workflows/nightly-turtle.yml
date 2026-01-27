@@ -60,7 +60,17 @@ jobs:
           find . -maxdepth 2 -name "entries_tomorrow*.csv" -print
           find . -maxdepth 2 -name "*_checklist_*.txt" -print
           find . -maxdepth 2 -name "*_email_*.html" -print
-
+      - name: Inspect entries CSV for news columns
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          df = pd.read_csv("entries_tomorrow.csv")
+          print("COLUMNS:", df.columns.tolist())
+          news_cols = [c for c in ["NewsScore","GeoRisk","TickerSent","IndustrySent","GeoSent","Sector","Industry"] if c in df.columns]
+          print("NEWS COLS PRESENT:", news_cols)
+          if news_cols:
+              print(df[["Ticker","Action"] + news_cols].head(20).to_string(index=False))
+          PY
       # ✅ Upload outputs so they are accessible after the run
       - name: Upload scanner outputs (CSV/TXT/HTML)
         uses: actions/upload-artifact@v4
