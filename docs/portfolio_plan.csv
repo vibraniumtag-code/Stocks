@@ -1,6 +1,8 @@
-Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
-HOLD,JNJ,JNJ 2026-03-06 C 230,1,0,0,HOLD,331.5,3.315,No action,Below pyramid thresholds
-HOLD,UPS,UPS 2026-03-06 C 110,2,0,0,HOLD,495.0,2.475,No action,ATR not OK
-SELL,UNH,UNH 2026-02-26 C 285,1,1,0,SELL_ALL,1140.0,11.4,Structure/Trim,Selling/Trimming takes priority
-SELL,UNH,UNH 2026-03-06 C 375,1,1,0,SELL_ALL,86.5,0.865,Structure/Trim,Selling/Trimming takes priority
-SELL,NFLX,NFLX 2026-02-20 P 88,2,1,0,SELL_1,770.0,3.85,Structure/Trim,Selling/Trimming takes priority
+Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
+HOLD,JNJ,JNJ 2026-03-06 C 230,1.0,0.0,0.0,HOLD,331.5,3.315,No action,Below pyramid thresholds,,,,,,
+HOLD,UPS,UPS 2026-03-06 C 110,2.0,0.0,0.0,HOLD,495.0,2.475,No action,ATR not OK,,,,,,
+SELL,UNH,UNH 2026-02-26 C 285,1.0,1.0,0.0,SELL_ALL,1140.0,11.4,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,UNH,UNH 2026-03-06 C 375,1.0,1.0,0.0,SELL_ALL,86.5,0.865,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NFLX,NFLX 2026-02-20 P 88,2.0,1.0,0.0,SELL_1,770.0,3.85,Structure/Trim,Selling/Trimming takes priority,,,,,,
+BUY,KO,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-06,KO260306C00074000,1.50,6.0,900.0
+BUY,CSCO,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-06,CSCO260306C00080000,2.50,2.0,500.0
