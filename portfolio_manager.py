@@ -1286,7 +1286,7 @@ Exit recommendation: {label_sell(sell_exit, contracts)}
             spend = float(alloc["EstCostTotal"].sum()) if not alloc.empty else 0.0
             cash_left = float(buying_power - spend)
 
-                        for _, r in alloc.iterrows():
+            for _, r in alloc.iterrows():
                 buy_n = int(r.get("BuyContracts", 0))
                 if buy_n <= 0:
                     continue
