@@ -1,3 +1,7 @@
 numpy
 pandas
 yfinance
+urllib
+requests
+time
+vaderSentiment
