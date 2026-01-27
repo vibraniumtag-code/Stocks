@@ -1,6 +1,3 @@
-Can we do the updates to the portfolio manager script 
-
-
 #!/usr/bin/env python3
 """
 portfolio_manager.py  (FULL — Turtle-style pretty HTML email + exits/trims + pyramiding + scanner + vol-adjusted buys + CASH FILE)
