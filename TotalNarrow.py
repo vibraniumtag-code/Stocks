@@ -119,7 +119,7 @@ EMAIL_MODE = os.getenv("EMAIL_MODE", "always").strip().lower()  # always | entri
 
 
 # ---------------------- NEWS / SENTIMENT (optional) ----------------------
-NEWS_ENABLED = int(os.getenv("NEWS_ENABLED", "0"))  # 1=on, 0=off
+NEWS_ENABLED = int(os.getenv("NEWS_ENABLED", "1"))  # 1=on, 0=off
 NEWS_MODE = os.getenv("NEWS_MODE", "annotate").strip().lower()  # annotate | gate | rank
 
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
@@ -595,9 +595,20 @@ def generate_new_entries(top: int,
                 continue
 
             # ---------- NEWS overlay (annotate/gate/rank) ----------
-            news = compute_news_overlay(t)
-            news_score = float(news["NewsScore"]) if str(news.get("NewsScore","")) != "" else float("nan")
-            geo_risk = float(news["GeoRisk"]) if str(news.get("GeoRisk","")) != "" else float("nan")
+            news = {}
+            news_score = float("nan")
+            geo_risk = float("nan")
+            try:
+                news = compute_news_overlay(t) or {}
+                ns = news.get("NewsScore", "")
+                gr = news.get("GeoRisk", "")
+                news_score = float(ns) if str(ns) not in ("", "nan") else float("nan")
+                geo_risk = float(gr) if str(gr) not in ("", "nan") else float("nan")
+            except Exception as e:
+                # keep the trade, just skip news
+                news = {"Sector":"","Industry":"","TickerSent":"","IndustrySent":"","GeoSent":"","GeoRisk":"","NewsScore":"",
+                        "HeadlinesTicker":"","HeadlinesIndustry":"","HeadlinesGeo":""}
+
 
             if NEWS_ENABLED == 1 and NEWS_MODE == "gate":
                 if not news_gate_pass(action, news_score, geo_risk):
