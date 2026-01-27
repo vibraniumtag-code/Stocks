@@ -27,6 +27,10 @@ jobs:
           if [ -f "requirements.txt" ]; then pip install -r requirements.txt; fi
           # Ensure news deps exist if you enable news
           pip install -U requests vaderSentiment yfinance
+          
+      - name: Verify news deps
+        run: |
+          python -c "import requests; from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer; print('NEWS deps OK')"
 
       # 🔹 Run your scanner (HTML + TXT + CSV output)
       - name: Run Turtle script
