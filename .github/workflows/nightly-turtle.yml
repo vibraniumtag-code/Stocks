@@ -34,6 +34,8 @@ jobs:
             --allow-shorts 1 \
             --top 5000 \
             --save entries_tomorrow.csv \
+            --NEWS_ENABLEd 1 \
+            --NEWS_MODE annotate \
             --emit-checklist 1 \
             --emit-html 1
 
