@@ -25,9 +25,23 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f "Stocks/requirements.txt" ]; then pip install -r Stocks/requirements.txt; fi
           if [ -f "requirements.txt" ]; then pip install -r requirements.txt; fi
+          # Ensure news deps exist if you enable news
+          pip install -U requests vaderSentiment yfinance
 
-      # 🔹 Run your scanner (HTML + TXT output)
+      # 🔹 Run your scanner (HTML + TXT + CSV output)
       - name: Run Turtle script
+        env:
+          # ---- NEWS (optional) ----
+          NEWS_ENABLED: "1"          # set "0" to disable
+          NEWS_MODE: "annotate"      # annotate | gate | rank
+          NEWS_LOOKBACK_DAYS: "3"
+          NEWS_MAX_HEADLINES: "30"
+          GEO_RISK_MAX: "0.30"
+          SENT_LONG_MIN: "0.05"
+          SENT_SHORT_MAX: "-0.05"
+          # Optional AlphaVantage (if you have it)
+          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
+          # ------------------------
         run: |
           python TotalNarrow.py \
             --system 1 \
@@ -36,6 +50,22 @@ jobs:
             --save entries_tomorrow.csv \
             --emit-checklist 1 \
             --emit-html 1
+          echo "---- OUTPUT FILES ----"
+          ls -la
+          echo "---- FIND entries ----"
+          find . -maxdepth 2 -name "entries_tomorrow*.csv" -print
+          find . -maxdepth 2 -name "*_checklist_*.txt" -print
+          find . -maxdepth 2 -name "*_email_*.html" -print
+
+      # ✅ Upload outputs so they are accessible after the run
+      - name: Upload scanner outputs (CSV/TXT/HTML)
+        uses: actions/upload-artifact@v4
+        with:
+          name: turtle-scanner-output
+          path: |
+            entries_tomorrow.csv
+            *_checklist_*.txt
+            *_email_*.html
 
       # 🔹 Send PRETTY HTML email (with text fallback)
       - name: Send HTML email
@@ -56,7 +86,6 @@ jobs:
           pw   = os.environ["SMTP_PASS"]
           to   = os.environ["EMAIL_TO"]
 
-          # Locate latest outputs
           html_files = sorted(glob.glob("*_email_*.html"))
           txt_files  = sorted(glob.glob("*_checklist_*.txt"))
 
@@ -76,10 +105,7 @@ jobs:
           msg["From"] = f"Turtle Scanner <{user}>"
           msg["To"] = to
 
-          # Plain-text fallback (kept minimal)
           msg.set_content(text_body)
-
-          # HTML version (THIS is what clients render)
           msg.add_alternative(html_body, subtype="html")
 
           with smtplib.SMTP(host, port) as s:
