@@ -35,7 +35,7 @@ jobs:
 
           DROP_PCT: "15"
           MIN_MKTCAP: "1000000000"
-          NEAR_LOW_PCT: "0.05"
+          NEAR_LOW_PCT: "0.1"
           TOP_N: "50"
 
           STAGE1_CHUNK: "200"
