@@ -1,8 +1,8 @@
 name: US Market Weekly Drop Screener (15%+ Near 2Y Low)
 
 on:
-  schedule:
-    - cron: "10 00 * * *"
+#  schedule:
+#    - cron: "10 00 * * *"
   workflow_dispatch: {}
 
 jobs:
