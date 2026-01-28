@@ -10,6 +10,9 @@ jobs:
   scan-us-market:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    environment: GMAIL   # <-- remove this line if you're NOT using Environment secrets
+
+
 
 
  
