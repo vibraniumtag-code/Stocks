@@ -2,25 +2,23 @@ name: US Market Weekly Drop Screener (15%+ Near 2Y Low)
 
 on:
   schedule:
-    # Runs Tue–Sat at 00:25 UTC (Mon–Fri evenings NA time)
-    - cron: 10 00 * * *"
+    # Tue–Sat 00:25 UTC (Mon–Fri evening NA time)
+    - cron: "25 00 * * 2-6"
   workflow_dispatch: {}
 
 jobs:
   scan-us-market:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    environment: GMAIL   # <-- remove this line if you're NOT using Environment secrets
 
+    # ✅ GitHub Environment
+    environment: GMAIL
 
-
-
- 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -30,33 +28,33 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas yfinance
 
-      - name: Run US market drop screener
+      - name: Run US market screener
         env:
-          # ===== SMTP (EMAIL) =====
+          # ===== SMTP (from GMAIL environment) =====
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_TO:   ${{ secrets.EMAIL_TO }}
 
-          # ===== SCREEN PARAMETERS =====
+          # ===== Screener parameters =====
           DROP_PCT: "15"
           MIN_MKTCAP: "1000000000"
           NEAR_LOW_PCT: "0.05"
           TOP_N: "50"
 
-          # ===== PERFORMANCE TUNING =====
+          # ===== Performance tuning =====
           STAGE1_CHUNK: "200"
           STAGE2_CHUNK: "100"
-          MAX_STAGE1: "0"        # set to e.g. 4000 if you hit timeouts
+          MAX_STAGE1: "0"     # set to 4000 if Actions times out
 
-          # ===== EMAIL BEHAVIOR =====
+          # ===== Email behavior =====
           SEND_EMAIL: "1"
-          EMAIL_MODE: "nonempty"  # or "always"
+          EMAIL_MODE: "nonempty"   # use "always" to force email
         run: |
           python weekly_market_drop_screener.py
 
-      - name: Upload results (CSV + HTML)
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
           name: us-market-weekly-drop
