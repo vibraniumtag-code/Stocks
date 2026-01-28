@@ -2,7 +2,6 @@ name: US Market Weekly Drop Screener (15%+ Near 2Y Low)
 
 on:
   schedule:
-    # Tue–Sat 00:25 UTC (Mon–Fri evening NA time)
     - cron: "25 00 * * 2-6"
   workflow_dispatch: {}
 
@@ -10,8 +9,6 @@ jobs:
   scan-us-market:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-
-    # ✅ GitHub Environment
     environment: GMAIL
 
     steps:
@@ -28,31 +25,34 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas yfinance
 
+      - name: Debug list repo files
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f | sort
+
       - name: Run US market screener
         env:
-          # ===== SMTP (from GMAIL environment) =====
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_TO:   ${{ secrets.EMAIL_TO }}
 
-          # ===== Screener parameters =====
           DROP_PCT: "15"
           MIN_MKTCAP: "1000000000"
           NEAR_LOW_PCT: "0.05"
           TOP_N: "50"
 
-          # ===== Performance tuning =====
           STAGE1_CHUNK: "200"
           STAGE2_CHUNK: "100"
-          MAX_STAGE1: "0"     # set to 4000 if Actions times out
+          MAX_STAGE1: "0"
 
-          # ===== Email behavior =====
           SEND_EMAIL: "1"
-          EMAIL_MODE: "nonempty"   # use "always" to force email
+          EMAIL_MODE: "nonempty"
         run: |
-          python weekly_market_drop_screener.py
+          SCRIPT_PATH="weekly_market_drop_screener.py"
+          python "$SCRIPT_PATH"
 
       - name: Upload results
         uses: actions/upload-artifact@v4
