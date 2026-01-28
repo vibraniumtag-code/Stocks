@@ -1,21 +1,60 @@
-- name: Run scan
-  env:
-    SMTP_HOST: ${{ secrets.SMTP_HOST }}
-    SMTP_PORT: ${{ secrets.SMTP_PORT }}
-    SMTP_USER: ${{ secrets.SMTP_USER }}
-    SMTP_PASS: ${{ secrets.SMTP_PASS }}
-    EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+name: US Market Weekly Drop Screener (15%+ Near 2Y Low)
 
-    DROP_PCT: "15"
-    MIN_MKTCAP: "1000000000"
-    NEAR_LOW_PCT: "0.05"
-    TOP_N: "50"
+on:
+  schedule:
+    # Runs Tue–Sat at 00:25 UTC (Mon–Fri evenings NA time)
+    - cron: "25 00 * * 2-6"
+  workflow_dispatch: {}
 
-    STAGE1_CHUNK: "200"
-    STAGE2_CHUNK: "100"
-    MAX_STAGE1: "0"         # set 4000 if timeouts
+jobs:
+  scan-us-market:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
 
-    SEND_EMAIL: "1"
-    EMAIL_MODE: "nonempty"
-  run: |
-    python weekly_market_drop_screener.py
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas yfinance
+
+      - name: Run US market drop screener
+        env:
+          # ===== SMTP (EMAIL) =====
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+
+          # ===== SCREEN PARAMETERS =====
+          DROP_PCT: "15"
+          MIN_MKTCAP: "1000000000"
+          NEAR_LOW_PCT: "0.05"
+          TOP_N: "50"
+
+          # ===== PERFORMANCE TUNING =====
+          STAGE1_CHUNK: "200"
+          STAGE2_CHUNK: "100"
+          MAX_STAGE1: "0"        # set to e.g. 4000 if you hit timeouts
+
+          # ===== EMAIL BEHAVIOR =====
+          SEND_EMAIL: "1"
+          EMAIL_MODE: "nonempty"  # or "always"
+        run: |
+          python weekly_market_drop_screener.py
+
+      - name: Upload results (CSV + HTML)
+        uses: actions/upload-artifact@v4
+        with:
+          name: us-market-weekly-drop
+          path: |
+            docs/weekly_drop_2y_low.csv
+            docs/weekly_drop_2y_low_email.html
