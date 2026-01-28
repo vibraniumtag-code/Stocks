@@ -36,8 +36,7 @@ Optional env:
   EMAIL_MODE=always | entries_only   (default: always)
 
 NEWS env vars (optional):
-  NEWS_ENABLED=0
-  NEWS_DEBUG=1
+  NEWS_ENABLED=1
   NEWS_MODE=annotate | gate | rank
   NEWS_LOOKBACK_DAYS=3
   NEWS_MAX_HEADLINES=30
@@ -138,10 +137,7 @@ W_INDUSTRY = float(os.getenv("W_INDUSTRY", "0.25"))
 W_GEO = float(os.getenv("W_GEO", "0.20"))
 
 NEWS_RANK_KEEP = int(os.getenv("NEWS_RANK_KEEP", "0"))
-NEWS_DEBUG = int(os.getenv("NEWS_DEBUG", "1"))
 
-
-      
 GEO_QUERY = os.getenv(
     "GEO_QUERY",
     (
@@ -344,8 +340,7 @@ def fetch_headlines_gdelt(query: str, lookback_days: int, max_headlines: int) ->
 
     titles: List[str] = []
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; TurtleScanner/1.0)"}
-        r = requests.get(url, params=params, headers=headers, timeout=20)
+        r = requests.get(url, params=params, timeout=20)
         if r.status_code != 200:
             _news_cache[cache_key] = []
             return []
@@ -450,7 +445,7 @@ def compute_news_overlay(ticker: str) -> Dict[str, object]:
     ticker_titles = fetch_headlines_alpha_vantage_ticker(ticker, NEWS_LOOKBACK_DAYS, NEWS_MAX_HEADLINES)
     if not ticker_titles:
         # make GDELT query robust: prefer $TICKER or company mentions
-        ticker_titles = fetch_headlines_gdelt(f"(${ticker} OR {ticker}) AND (stock OR shares OR earnings OR guidance OR outlook)", NEWS_LOOKBACK_DAYS, NEWS_MAX_HEADLINES)
+        ticker_titles = fetch_headlines_gdelt(f"{ticker} stock OR {ticker} shares OR {ticker}", NEWS_LOOKBACK_DAYS, NEWS_MAX_HEADLINES)
 
     # --- Industry headlines: use industry first, else sector ---
     industry_query = ""
@@ -491,10 +486,6 @@ def compute_news_overlay(ticker: str) -> Dict[str, object]:
         "HeadlinesTicker": _join3(ticker_titles),
         "HeadlinesIndustry": _join3(industry_titles),
         "HeadlinesGeo": _join3(geo_titles),
-        "TickerHL": len(ticker_titles),
-        "IndustryHL": len(industry_titles),
-        "GeoHL": len(geo_titles)
-
     }
 
 
@@ -604,22 +595,9 @@ def generate_new_entries(top: int,
                 continue
 
             # ---------- NEWS overlay (annotate/gate/rank) ----------
-            news = {}
-            news_score = float("nan")
-            geo_risk = float("nan")
-            try:
-                news = compute_news_overlay(t) or {}
-                print(f"NEWS {t}: ht={len(ticker_titles)} hi={len(industry_titles)} hg={len(geo_titles)} score={news_score}")
-
-                ns = news.get("NewsScore", "")
-                gr = news.get("GeoRisk", "")
-                news_score = float(ns) if str(ns) not in ("", "nan") else float("nan")
-                geo_risk = float(gr) if str(gr) not in ("", "nan") else float("nan")
-            except Exception as e:
-                # keep the trade, just skip news
-                news = {"Sector":"","Industry":"","TickerSent":"","IndustrySent":"","GeoSent":"","GeoRisk":"","NewsScore":"",
-                        "HeadlinesTicker":"","HeadlinesIndustry":"","HeadlinesGeo":""}
-
+            news = compute_news_overlay(t)
+            news_score = float(news["NewsScore"]) if str(news.get("NewsScore","")) != "" else float("nan")
+            geo_risk = float(news["GeoRisk"]) if str(news.get("GeoRisk","")) != "" else float("nan")
 
             if NEWS_ENABLED == 1 and NEWS_MODE == "gate":
                 if not news_gate_pass(action, news_score, geo_risk):
