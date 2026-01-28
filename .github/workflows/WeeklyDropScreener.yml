@@ -43,7 +43,7 @@ jobs:
           MAX_STAGE1: "0"
 
           SEND_EMAIL: "1"
-          EMAIL_MODE: "nonempty"
+          EMAIL_MODE: "always"
         run: |
           set -e
           echo "Repo root:"
