@@ -1,7 +1,7 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
-HOLD,XOM,XOM 2026-02-28 C 138,2.0,0.0,0.0,HOLD,700.0,3.5,No action,Below pyramid thresholds,,,,,,
-HOLD,JNJ,JNJ 2026-03-06 C 230,1.0,0.0,0.0,HOLD,432.5,4.325,No action,Below pyramid thresholds,,,,,,
-HOLD,UPS,UPS 2026-03-06 C 110,2.0,0.0,0.0,HOLD,303.0,1.5150000000000001,No action,ATR not OK,,,,,,
+SELL,XOM,XOM 2026-02-28 C 138,2.0,1.0,0.0,SELL_1,700.0,3.5,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,JNJ,JNJ 2026-03-06 C 230,1.0,0.0,0.0,HOLD,412.5,4.125,No action,Below pyramid thresholds,,,,,,
+SELL,UPS,UPS 2026-03-06 C 110,2.0,2.0,0.0,SELL_ALL,194.0,0.97,Structure/Trim,Selling/Trimming takes priority,,,,,,
 SELL,UNH,UNH 2026-02-26 C 285,1.0,1.0,0.0,SELL_ALL,1140.0,11.4,Structure/Trim,Selling/Trimming takes priority,,,,,,
-SELL,UNH,UNH 2026-03-06 C 375,1.0,1.0,0.0,SELL_ALL,57.0,0.57,Structure/Trim,Selling/Trimming takes priority,,,,,,
-BUY,TXN,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-20,TXN260320C00210000,11.22,1.0,1122.0
+SELL,UNH,UNH 2026-03-06 C 375,1.0,1.0,0.0,SELL_ALL,35.5,0.355,Structure/Trim,Selling/Trimming takes priority,,,,,,
+BUY,CVX,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-20,CVX260320C00170000,5.28,3.0,1584.0
