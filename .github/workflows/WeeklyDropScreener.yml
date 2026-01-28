@@ -3,7 +3,7 @@ name: US Market Weekly Drop Screener (15%+ Near 2Y Low)
 on:
   schedule:
     # Runs Tue–Sat at 00:25 UTC (Mon–Fri evenings NA time)
-    - cron: "25 00 * * 2-6"
+    - cron: 10 00 * * *"
   workflow_dispatch: {}
 
 jobs:
