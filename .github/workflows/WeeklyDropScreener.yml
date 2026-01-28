@@ -25,13 +25,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas yfinance
 
-      - name: Debug list repo files
-        run: |
-          pwd
-          ls -la
-          find . -maxdepth 3 -type f | sort
-
-      - name: Run US market screener
+      - name: Locate & run screener script
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -51,8 +45,24 @@ jobs:
           SEND_EMAIL: "1"
           EMAIL_MODE: "nonempty"
         run: |
-          SCRIPT_PATH="weekly_market_drop_screener.py"
-          python "$SCRIPT_PATH"
+          set -e
+          echo "Repo root:"
+          pwd
+          echo "Searching for screener script..."
+
+          # Try exact expected name first
+          if [ -f "weekly_market_drop_screener.py" ]; then
+            SCRIPT="weekly_market_drop_screener.py"
+          elif [ -f "weekly_drop_2y_low_email.py" ]; then
+            SCRIPT="weekly_drop_2y_low_email.py"
+          else
+            # last resort: find any .py containing a recognizable marker
+            SCRIPT="$(find . -maxdepth 3 -type f -name "*.py" | head -n 1)"
+          fi
+
+          echo "Using script: $SCRIPT"
+          ls -la "$SCRIPT"
+          python "$SCRIPT"
 
       - name: Upload results
         uses: actions/upload-artifact@v4
