@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-weekly_drop_2y_low_email.py
+weekly_drop_1y_low_email.py  (you can keep filename weekly_drop_2y_low_email.py if you prefer)
 
 Scans the *current US stock market* automatically (no universe file needed).
 
@@ -11,8 +11,8 @@ Universe source (Nasdaq Trader symbol directory):
 Filters:
 - Drop over last ~5 trading days <= -DROP_PCT (default 15)
 - Market cap >= MIN_MKTCAP (default $1B)
-- Close is near 2-year low:
-    dist_to_2y_low_pct <= NEAR_LOW_PCT*100 (default within 5%)
+- Close is near 1-year low:
+    dist_to_1y_low_pct <= NEAR_LOW_PCT*100 (default within 5%)
 
 Email (SMTP env vars):
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
@@ -27,8 +27,8 @@ Performance knobs:
   MAX_STAGE1   (default 0 => scan all; set 4000 if you hit timeouts)
 
 Outputs:
-  docs/weekly_drop_2y_low.csv
-  docs/weekly_drop_2y_low_email.html
+  docs/weekly_drop_1y_low.csv
+  docs/weekly_drop_1y_low_email.html
 """
 
 import os
@@ -120,7 +120,7 @@ def build_email_html(df: pd.DataFrame, asof: str, drop_pct: float, near_low_pct:
     headline = f"📉 US Market Weekly Drop Screener — {count} match(es)"
     subtitle = (
         f"As of {asof} • Drop ≥ {drop_pct:.0f}% (5 trading days) • "
-        f"Market Cap ≥ ${min_mktcap/1e9:.0f}B • Near 2Y Low (within {near_low_pct*100:.0f}%)"
+        f"Market Cap ≥ ${min_mktcap/1e9:.0f}B • Near 1Y Low (within {near_low_pct*100:.0f}%)"
     )
 
     if count == 0:
@@ -129,7 +129,7 @@ def build_email_html(df: pd.DataFrame, asof: str, drop_pct: float, near_low_pct:
                style="border-collapse:collapse;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.10);border-radius:12px;overflow:hidden;">
           <tr>
             <td style="padding:14px;color:rgba(255,255,255,.85);">
-              ✅ No matches today. (Market didn’t offer any obvious “falling knives”.)
+              ✅ No matches today.
             </td>
           </tr>
         </table>
@@ -155,10 +155,10 @@ def build_email_html(df: pd.DataFrame, asof: str, drop_pct: float, near_low_pct:
                 {pct(safe_float(r.get('drop_5d_pct')))}
               </td>
               <td style="padding:12px;border-top:1px solid rgba(255,255,255,.08);text-align:right;color:rgba(255,255,255,.9);white-space:nowrap;">
-                {fmt_price(safe_float(r.get('low_2y')))}
+                {fmt_price(safe_float(r.get('low_1y')))}
               </td>
               <td style="padding:12px;border-top:1px solid rgba(255,255,255,.08);text-align:right;color:rgba(255,255,255,.9);white-space:nowrap;">
-                {pct(safe_float(r.get('dist_to_2y_low_pct')))}
+                {pct(safe_float(r.get('dist_to_1y_low_pct')))}
               </td>
             </tr>
             """
@@ -173,7 +173,7 @@ def build_email_html(df: pd.DataFrame, asof: str, drop_pct: float, near_low_pct:
                 <th align="right" style="padding:12px;color:rgba(255,255,255,.82);font-size:12px;">Mkt Cap</th>
                 <th align="right" style="padding:12px;color:rgba(255,255,255,.82);font-size:12px;">Close</th>
                 <th align="right" style="padding:12px;color:rgba(255,255,255,.82);font-size:12px;">5D Drop</th>
-                <th align="right" style="padding:12px;color:rgba(255,255,255,.82);font-size:12px;">2Y Low</th>
+                <th align="right" style="padding:12px;color:rgba(255,255,255,.82);font-size:12px;">1Y Low</th>
                 <th align="right" style="padding:12px;color:rgba(255,255,255,.82);font-size:12px;">Dist to Low</th>
               </tr>
             </thead>
@@ -201,7 +201,7 @@ def build_email_html(df: pd.DataFrame, asof: str, drop_pct: float, near_low_pct:
           <div style="margin-top:14px;padding:12px;border-radius:12px;background:rgba(255,255,255,.04);
                       border:1px solid rgba(255,255,255,.08);color:rgba(255,255,255,.70);font-size:12.5px;line-height:1.45;">
             🧠 <b style="color:rgba(255,255,255,.88);">Notes:</b>
-            Stage-1 uses last 5 trading closes. Then we only fetch 2Y data + market cap for survivors.
+            Stage-1 uses last 5 trading closes. Then we only fetch 1Y data + market cap for survivors.
             Always sanity-check liquidity, spreads, and news.
           </div>
 
@@ -229,9 +229,7 @@ def load_us_listed_tickers() -> List[str]:
     other_url = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
 
     def read_pipe_txt(url: str) -> pd.DataFrame:
-        # Read as strings; some rows still come in as NaN -> handle later
         df = pd.read_csv(url, sep="|", dtype=str, engine="python")
-        # Drop footer rows like: "File Creation Time: ..."
         first_col = df.columns[0]
         df = df[~df[first_col].astype(str).str.contains("File Creation Time", na=False)]
         return df
@@ -253,7 +251,7 @@ def load_us_listed_tickers() -> List[str]:
 
             if test == "Y":
                 continue
-            # default exclude ETFs (you can change this if you want)
+            # default exclude ETFs (change if you want ETFs included)
             if etf == "Y":
                 continue
 
@@ -277,7 +275,6 @@ def load_us_listed_tickers() -> List[str]:
 
             tickers.append(sym)
 
-    # yfinance dislikes many odd symbols; keep common ones
     cleaned: List[str] = []
     seen = set()
     for t in tickers:
@@ -359,19 +356,19 @@ def download_closes_5d_drop(tickers: List[str], chunk_size: int) -> pd.DataFrame
     return df
 
 
-def add_2y_low_metrics(df: pd.DataFrame, chunk_size: int) -> pd.DataFrame:
+def add_1y_low_metrics(df: pd.DataFrame, chunk_size: int) -> pd.DataFrame:
     """
-    For narrowed tickers, downloads 2y daily data to compute:
-      low_2y & dist_to_2y_low_pct
+    For narrowed tickers, downloads 1y daily data to compute:
+      low_1y & dist_to_1y_low_pct
     """
     tickers = df["ticker"].tolist()
     out_rows: List[Dict[str, Any]] = []
 
     for idx, batch in enumerate(chunked(tickers, chunk_size), start=1):
-        print(f"[Stage2] Batch {idx}: {len(batch)} tickers (2y)")
+        print(f"[Stage2] Batch {idx}: {len(batch)} tickers (1y)")
         hist = yf.download(
             tickers=batch,
-            period="2y",
+            period="1y",
             interval="1d",
             group_by="ticker",
             threads=True,
@@ -400,14 +397,14 @@ def add_2y_low_metrics(df: pd.DataFrame, chunk_size: int) -> pd.DataFrame:
                     continue
 
                 close = float(close_series.iloc[-1])
-                low_2y = float(low_series.min())
-                dist_to_2y_low_pct = ((close / low_2y) - 1.0) * 100.0
+                low_1y = float(low_series.min())
+                dist_to_1y_low_pct = ((close / low_1y) - 1.0) * 100.0
 
                 out_rows.append(
                     {
                         "ticker": t,
-                        "low_2y": low_2y,
-                        "dist_to_2y_low_pct": dist_to_2y_low_pct,
+                        "low_1y": low_1y,
+                        "dist_to_1y_low_pct": dist_to_1y_low_pct,
                     }
                 )
             except Exception:
@@ -415,13 +412,13 @@ def add_2y_low_metrics(df: pd.DataFrame, chunk_size: int) -> pd.DataFrame:
 
     m = pd.DataFrame(out_rows)
     if m.empty:
-        df["low_2y"] = pd.NA
-        df["dist_to_2y_low_pct"] = pd.NA
+        df["low_1y"] = pd.NA
+        df["dist_to_1y_low_pct"] = pd.NA
         return df
 
     merged = df.merge(m, on="ticker", how="left")
-    merged["dist_to_2y_low_pct"] = pd.to_numeric(merged["dist_to_2y_low_pct"], errors="coerce")
-    merged["low_2y"] = pd.to_numeric(merged["low_2y"], errors="coerce")
+    merged["dist_to_1y_low_pct"] = pd.to_numeric(merged["dist_to_1y_low_pct"], errors="coerce")
+    merged["low_1y"] = pd.to_numeric(merged["low_1y"], errors="coerce")
     return merged
 
 
@@ -483,8 +480,8 @@ def main():
     ap.add_argument("--stage1-chunk", type=int, default=int(os.getenv("STAGE1_CHUNK", "200")))
     ap.add_argument("--stage2-chunk", type=int, default=int(os.getenv("STAGE2_CHUNK", "100")))
     ap.add_argument("--max-stage1", type=int, default=int(os.getenv("MAX_STAGE1", "0")))  # 0 means no cap
-    ap.add_argument("--save-csv", default="docs/weekly_drop_2y_low.csv")
-    ap.add_argument("--save-html", default="docs/weekly_drop_2y_low_email.html")
+    ap.add_argument("--save-csv", default="docs/weekly_drop_1y_low.csv")
+    ap.add_argument("--save-html", default="docs/weekly_drop_1y_low_email.html")
     ap.add_argument("--send-email", type=int, default=int(os.getenv("SEND_EMAIL", "1")))
     args = ap.parse_args()
 
@@ -503,33 +500,30 @@ def main():
         print("[Stage1] No data returned.")
         final = df1
     else:
-        # drop pct is negative for drops (e.g. -18%), so require <= -drop_pct
         survivors = df1[df1["drop_5d_pct"] <= (-abs(args.drop_pct))].copy()
         print(f"[Stage1] Survivors after drop filter: {len(survivors)}")
 
         if survivors.empty:
             final = survivors
         else:
-            # Stage 2: 2y low metrics
-            survivors = add_2y_low_metrics(survivors, chunk_size=args.stage2_chunk)
+            # Stage 2: 1y low metrics
+            survivors = add_1y_low_metrics(survivors, chunk_size=args.stage2_chunk)
 
-            # Near 2y low filter
             survivors = survivors[
-                survivors["dist_to_2y_low_pct"].fillna(1e9) <= (args.near_low_pct * 100.0)
+                survivors["dist_to_1y_low_pct"].fillna(1e9) <= (args.near_low_pct * 100.0)
             ].copy()
-            print(f"[Stage2] Survivors near 2Y low: {len(survivors)}")
+            print(f"[Stage2] Survivors near 1Y low: {len(survivors)}")
 
             if survivors.empty:
                 final = survivors
             else:
                 # Stage 3: market cap + name
                 survivors = add_market_caps(survivors)
-
                 final = survivors[survivors["market_cap"].fillna(0) >= args.min_mktcap].copy()
 
     # Sort: biggest drops first, then closest to low
     if not final.empty:
-        final = final.sort_values(["drop_5d_pct", "dist_to_2y_low_pct"], ascending=[True, True]).head(args.top)
+        final = final.sort_values(["drop_5d_pct", "dist_to_1y_low_pct"], ascending=[True, True]).head(args.top)
 
     # Save outputs
     os.makedirs(os.path.dirname(args.save_csv), exist_ok=True)
@@ -545,7 +539,7 @@ def main():
     # Email
     mode = os.getenv("EMAIL_MODE", "nonempty").strip().lower()
     should_send = (mode == "always") or (mode != "always" and len(final) > 0)
-    subject = f"📉 US Market Drops ≥{int(args.drop_pct)}% & Near 2Y Low ({len(final)} matches) — {asof}"
+    subject = f"📉 US Market Drops ≥{int(args.drop_pct)}% & Near 1Y Low ({len(final)} matches) — {asof}"
 
     if args.send_email and should_send:
         send_email_html(subject, html_body)
