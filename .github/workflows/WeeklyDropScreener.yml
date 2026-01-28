@@ -3,7 +3,7 @@ name: Weekly Drop + 2Y Low Screener
 on:
   schedule:
     # Weekdays 7:10 PM Toronto time-ish (GitHub uses UTC; adjust if you want exact)
-    - cron: "10 00 * * 2-6"
+    - cron: "10 00 * * *"
   workflow_dispatch: {}
 
 jobs:
