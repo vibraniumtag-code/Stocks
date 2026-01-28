@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-weekly_market_drop_screener.py
+weekly_drop_2y_low_email.py
 
-Scans the *current US stock market* (no universe file needed).
+Scans the *current US stock market* automatically (no universe file needed).
 
-Universe source:
-- Nasdaq Trader symbol directory:
-  https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt
-  https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt
+Universe source (Nasdaq Trader symbol directory):
+- https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt
+- https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt
 
 Filters:
 - Drop over last ~5 trading days <= -DROP_PCT (default 15)
@@ -15,15 +14,21 @@ Filters:
 - Close is near 2-year low:
     dist_to_2y_low_pct <= NEAR_LOW_PCT*100 (default within 5%)
 
-Email:
-- SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
-- EMAIL_MODE=always | nonempty (default nonempty)
-- SEND_EMAIL=1/0
+Email (SMTP env vars):
+  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
+Optional:
+  EMAIL_TO can be comma-separated / semi-colon separated
+  EMAIL_MODE=always | nonempty (default nonempty)
+  SEND_EMAIL=1/0
 
-Notes:
-- This is a big scan; we do it in stages to avoid downloading 2 years for everything.
-- Uses yfinance which can be rate-limited; chunk sizes are configurable.
+Performance knobs:
+  STAGE1_CHUNK (default 200)
+  STAGE2_CHUNK (default 100)
+  MAX_STAGE1   (default 0 => scan all; set 4000 if you hit timeouts)
 
+Outputs:
+  docs/weekly_drop_2y_low.csv
+  docs/weekly_drop_2y_low_email.html
 """
 
 import os
@@ -32,7 +37,7 @@ import ssl
 import smtplib
 import argparse
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 
 import pandas as pd
 
@@ -43,18 +48,17 @@ except Exception as e:
 
 
 # -----------------------------
-# Email (same pattern you used)
+# Email (same SMTP pattern)
 # -----------------------------
 def send_email_html(subject: str, html_body: str) -> None:
     host = os.getenv("SMTP_HOST", "").strip()
-    port = int(os.getenv("SMTP_PORT", "587").strip() or "587")
+    port = int((os.getenv("SMTP_PORT", "587") or "587").strip())
     user = os.getenv("SMTP_USER", "").strip()
     password = os.getenv("SMTP_PASS", "").strip()
     to_raw = os.getenv("EMAIL_TO", "").strip()
 
     if not all([host, user, password, to_raw]):
         missing = [k for k in ["SMTP_HOST", "SMTP_USER", "SMTP_PASS", "EMAIL_TO"] if not os.getenv(k)]
-        # SMTP_PORT has a default
         raise SystemExit(f"Missing SMTP env vars: {missing}")
 
     to_list = [x.strip() for x in re.split(r"[;,]", to_raw) if x.strip()]
@@ -67,6 +71,7 @@ def send_email_html(subject: str, html_body: str) -> None:
     msg["From"] = user
     msg["To"] = ", ".join(to_list)
 
+    # HTML only
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     context = ssl.create_default_context()
@@ -218,53 +223,64 @@ def load_us_listed_tickers() -> List[str]:
     """
     Pulls tickers from NasdaqTrader symbol directory.
     Excludes test issues, ETFs when flagged, and weird symbols.
+    Robust to NaNs / missing fields.
     """
     nasdaq_url = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
-    other_url  = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+    other_url = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
 
     def read_pipe_txt(url: str) -> pd.DataFrame:
-        # first line is header, last line is "File Creation Time: ..."
-        df = pd.read_csv(url, sep="|", dtype=str)
-        # drop trailing footer row(s)
-        df = df[~df.iloc[:, 0].str.contains("File Creation Time", na=False)]
+        # Read as strings; some rows still come in as NaN -> handle later
+        df = pd.read_csv(url, sep="|", dtype=str, engine="python")
+        # Drop footer rows like: "File Creation Time: ..."
+        first_col = df.columns[0]
+        df = df[~df[first_col].astype(str).str.contains("File Creation Time", na=False)]
         return df
 
     nas = read_pipe_txt(nasdaq_url)
     oth = read_pipe_txt(other_url)
 
-    tickers = []
+    tickers: List[str] = []
 
-    # nasdaqlisted columns typically include: Symbol, Security Name, Market Category, ETF, Test Issue, ...
+    # Nasdaq listed file (Symbol)
     if "Symbol" in nas.columns:
         for _, r in nas.iterrows():
-            sym = (r.get("Symbol") or "").strip().upper()
-            test = (r.get("Test Issue") or "").strip().upper()
-            etf  = (r.get("ETF") or "").strip().upper()
-            if not sym or test == "Y":
+            sym = str(r.get("Symbol") or "").strip().upper()
+            if sym in ("", "NAN"):
                 continue
-            # keep ETFs too? most people prefer stocks only → default exclude ETFs
+
+            test = str(r.get("Test Issue") or "").strip().upper()
+            etf = str(r.get("ETF") or "").strip().upper()
+
+            if test == "Y":
+                continue
+            # default exclude ETFs (you can change this if you want)
             if etf == "Y":
                 continue
+
             tickers.append(sym)
 
-    # otherlisted columns include: ACT Symbol, Security Name, ETF, Test Issue, ...
+    # Other listed file (ACT Symbol)
     sym_col = "ACT Symbol" if "ACT Symbol" in oth.columns else ("Symbol" if "Symbol" in oth.columns else None)
     if sym_col:
         for _, r in oth.iterrows():
-            sym = (r.get(sym_col) or "").strip().upper()
-            test = (r.get("Test Issue") or "").strip().upper()
-            etf  = (r.get("ETF") or "").strip().upper()
-            if not sym or test == "Y":
+            sym = str(r.get(sym_col) or "").strip().upper()
+            if sym in ("", "NAN"):
+                continue
+
+            test = str(r.get("Test Issue") or "").strip().upper()
+            etf = str(r.get("ETF") or "").strip().upper()
+
+            if test == "Y":
                 continue
             if etf == "Y":
                 continue
+
             tickers.append(sym)
 
-    # yfinance dislikes tickers with certain chars; keep common ones
-    cleaned = []
+    # yfinance dislikes many odd symbols; keep common ones
+    cleaned: List[str] = []
     seen = set()
     for t in tickers:
-        # keep letters/numbers and common dots/hyphens (BRK.B etc)
         if not re.match(r"^[A-Z0-9\.\-]+$", t):
             continue
         if t not in seen:
@@ -277,15 +293,15 @@ def load_us_listed_tickers() -> List[str]:
 # -----------------------------
 # Market data (staged + chunked)
 # -----------------------------
-def chunked(lst: List[str], n: int) -> List[List[str]]:
+def chunked(lst: List[str], n: int):
     for i in range(0, len(lst), n):
-        yield lst[i:i+n]
+        yield lst[i : i + n]
 
 
 def download_closes_5d_drop(tickers: List[str], chunk_size: int) -> pd.DataFrame:
     """
     Downloads ~7d of daily closes to compute 5 trading day drop.
-    Returns rows: ticker, close, close_5d_ago, drop_5d_pct
+    Returns: ticker, close, close_5d_ago, drop_5d_pct
     """
     rows: List[Dict[str, Any]] = []
 
@@ -324,12 +340,14 @@ def download_closes_5d_drop(tickers: List[str], chunk_size: int) -> pd.DataFrame
                 close_5d_ago = float(close_series.iloc[-6])
                 drop_5d_pct = (close / close_5d_ago - 1.0) * 100.0
 
-                rows.append({
-                    "ticker": t,
-                    "close": close,
-                    "close_5d_ago": close_5d_ago,
-                    "drop_5d_pct": drop_5d_pct,
-                })
+                rows.append(
+                    {
+                        "ticker": t,
+                        "close": close,
+                        "close_5d_ago": close_5d_ago,
+                        "drop_5d_pct": drop_5d_pct,
+                    }
+                )
             except Exception:
                 continue
 
@@ -343,10 +361,11 @@ def download_closes_5d_drop(tickers: List[str], chunk_size: int) -> pd.DataFrame
 
 def add_2y_low_metrics(df: pd.DataFrame, chunk_size: int) -> pd.DataFrame:
     """
-    For tickers already narrowed, downloads 2y daily data to compute low_2y & dist_to_2y_low_pct.
+    For narrowed tickers, downloads 2y daily data to compute:
+      low_2y & dist_to_2y_low_pct
     """
     tickers = df["ticker"].tolist()
-    out_rows = []
+    out_rows: List[Dict[str, Any]] = []
 
     for idx, batch in enumerate(chunked(tickers, chunk_size), start=1):
         print(f"[Stage2] Batch {idx}: {len(batch)} tickers (2y)")
@@ -384,11 +403,13 @@ def add_2y_low_metrics(df: pd.DataFrame, chunk_size: int) -> pd.DataFrame:
                 low_2y = float(low_series.min())
                 dist_to_2y_low_pct = ((close / low_2y) - 1.0) * 100.0
 
-                out_rows.append({
-                    "ticker": t,
-                    "low_2y": low_2y,
-                    "dist_to_2y_low_pct": dist_to_2y_low_pct,
-                })
+                out_rows.append(
+                    {
+                        "ticker": t,
+                        "low_2y": low_2y,
+                        "dist_to_2y_low_pct": dist_to_2y_low_pct,
+                    }
+                )
             except Exception:
                 continue
 
@@ -400,21 +421,23 @@ def add_2y_low_metrics(df: pd.DataFrame, chunk_size: int) -> pd.DataFrame:
 
     merged = df.merge(m, on="ticker", how="left")
     merged["dist_to_2y_low_pct"] = pd.to_numeric(merged["dist_to_2y_low_pct"], errors="coerce")
+    merged["low_2y"] = pd.to_numeric(merged["low_2y"], errors="coerce")
     return merged
 
 
 def add_market_caps(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Fetch market caps for already narrowed tickers.
+    Fetch market caps + names for narrowed tickers.
     """
     tickers = df["ticker"].tolist()
-    caps = {}
-    names = {}
+    caps: Dict[str, Optional[float]] = {}
+    names: Dict[str, str] = {}
 
     for i, t in enumerate(tickers, start=1):
         try:
             if i % 50 == 0:
                 print(f"[Stage3] Market caps: {i}/{len(tickers)}")
+
             yt = yf.Ticker(t)
 
             mcap = None
@@ -433,12 +456,12 @@ def add_market_caps(df: pd.DataFrame) -> pd.DataFrame:
                 except Exception:
                     info = None
 
-            nm = None
+            nm = "—"
             if info:
-                nm = info.get("shortName") or info.get("longName")
+                nm = info.get("shortName") or info.get("longName") or "—"
 
             caps[t] = safe_float(mcap)
-            names[t] = nm or "—"
+            names[t] = nm
         except Exception:
             caps[t] = None
             names[t] = "—"
@@ -475,34 +498,34 @@ def main():
 
     # Stage 1: weekly drop
     df1 = download_closes_5d_drop(tickers, chunk_size=args.stage1_chunk)
+
     if df1.empty:
-        print("No data returned in Stage 1.")
-        survivors = df1
+        print("[Stage1] No data returned.")
+        final = df1
     else:
+        # drop pct is negative for drops (e.g. -18%), so require <= -drop_pct
         survivors = df1[df1["drop_5d_pct"] <= (-abs(args.drop_pct))].copy()
         print(f"[Stage1] Survivors after drop filter: {len(survivors)}")
-
-    if survivors.empty:
-        final = survivors
-    else:
-        # Stage 2: 2y low metrics
-        survivors = add_2y_low_metrics(survivors, chunk_size=args.stage2_chunk)
-
-        # Near 2y low filter
-        survivors = survivors[
-            survivors["dist_to_2y_low_pct"].fillna(1e9) <= (args.near_low_pct * 100.0)
-        ].copy()
-        print(f"[Stage2] Survivors near 2Y low: {len(survivors)}")
 
         if survivors.empty:
             final = survivors
         else:
-            # Stage 3: market cap + name
-            survivors = add_market_caps(survivors)
+            # Stage 2: 2y low metrics
+            survivors = add_2y_low_metrics(survivors, chunk_size=args.stage2_chunk)
 
-            final = survivors[
-                survivors["market_cap"].fillna(0) >= args.min_mktcap
+            # Near 2y low filter
+            survivors = survivors[
+                survivors["dist_to_2y_low_pct"].fillna(1e9) <= (args.near_low_pct * 100.0)
             ].copy()
+            print(f"[Stage2] Survivors near 2Y low: {len(survivors)}")
+
+            if survivors.empty:
+                final = survivors
+            else:
+                # Stage 3: market cap + name
+                survivors = add_market_caps(survivors)
+
+                final = survivors[survivors["market_cap"].fillna(0) >= args.min_mktcap].copy()
 
     # Sort: biggest drops first, then closest to low
     if not final.empty:
