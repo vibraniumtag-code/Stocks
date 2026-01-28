@@ -1,54 +1,21 @@
-name: Weekly Drop + 2Y Low Screener
+- name: Run scan
+  env:
+    SMTP_HOST: ${{ secrets.SMTP_HOST }}
+    SMTP_PORT: ${{ secrets.SMTP_PORT }}
+    SMTP_USER: ${{ secrets.SMTP_USER }}
+    SMTP_PASS: ${{ secrets.SMTP_PASS }}
+    EMAIL_TO:   ${{ secrets.EMAIL_TO }}
 
-on:
-  schedule:
-    # Weekdays 7:10 PM Toronto time-ish (GitHub uses UTC; adjust if you want exact)
-    - cron: "10 00 * * *"
-  workflow_dispatch: {}
+    DROP_PCT: "15"
+    MIN_MKTCAP: "1000000000"
+    NEAR_LOW_PCT: "0.05"
+    TOP_N: "50"
 
-jobs:
-  run-screener:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    STAGE1_CHUNK: "200"
+    STAGE2_CHUNK: "100"
+    MAX_STAGE1: "0"         # set 4000 if timeouts
 
-    environment: GMAIL
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pandas yfinance
-
-      - name: Run screener
-        env:
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
-
-          # Optional tuning:
-          DROP_PCT: "15"
-          MIN_MKTCAP: "1000000000"
-          NEAR_LOW_PCT: "0.05"
-          TOP_N: "50"
-          SEND_EMAIL: "1"
-          EMAIL_MODE: "nonempty"   # or "always"
-        run: |
-          python weekly_drop_2y_low_email.py --universe-file docs/universe.txt --save-csv docs/weekly_drop_2y_low.csv --save-html docs/weekly_drop_2y_low_email.html
-
-      - name: Upload artifacts (CSV + HTML)
-        uses: actions/upload-artifact@v4
-        with:
-          name: weekly-drop-screener
-          path: |
-            docs/weekly_drop_2y_low.csv
-            docs/weekly_drop_2y_low_email.html
+    SEND_EMAIL: "1"
+    EMAIL_MODE: "nonempty"
+  run: |
+    python weekly_market_drop_screener.py
