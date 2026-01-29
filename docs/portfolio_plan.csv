@@ -1,6 +1,6 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
 HOLD,XOM,XOM 2026-02-28 C 138,2,0,0,HOLD,700.0,3.5,No action,Below pyramid thresholds
-HOLD,JNJ,JNJ 2026-03-06 C 230,1,0,0,HOLD,485.0,4.85,No action,Below pyramid thresholds
-SELL,UPS,UPS 2026-03-06 C 110,2,2,0,SELL_ALL,255.0,1.275,Structure/Trim,Selling/Trimming takes priority
+HOLD,JNJ,JNJ 2026-03-06 C 230,1,0,0,HOLD,427.5,4.275,No action,Below pyramid thresholds
+HOLD,UPS,UPS 2026-03-06 C 110,2,0,0,HOLD,323.0,1.615,No action,ATR not OK
 HOLD,UNH,UNH 2026-02-26 C 285,1,0,0,HOLD,1140.0,11.4,No action,Below pyramid thresholds
-HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,75.5,0.755,No action,ATR not OK
+HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,51.0,0.51,No action,ATR not OK
