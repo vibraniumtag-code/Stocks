@@ -1,26 +1,20 @@
-name: Daily Options Email (Screen Only)
+name: Options US Universe Scan
 
 on:
-  workflow_dispatch:
   schedule:
-    # 9:40 AM Toronto time ≈ 14:40 UTC during EST (and 13:40 UTC during EDT)
-    # If you want it to always match market time across DST, we can adjust with a DST-aware approach.
-    - cron: "40 14 * * 1-5"
+    # Weekdays 7:15pm Toronto time-ish in winter = 00:15 UTC (adjust if you want)
+    - cron: "15 0 * * 1-5"
+  workflow_dispatch:
 
 jobs:
+  run-scan:
+    runs-on: ubuntu-latest
 
-  run: |
-    if [ -z "${GMAIL}" ]; then
-      echo "GMAIL is EMPTY in runner"
-      exit 1
-    else
-      echo "GMAIL is set (length: ${#GMAIL})"
-    fi
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -28,8 +22,30 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance pandas
+          pip install pandas yfinance
 
-      - name: Run scanner + send email
+      - name: Run scanner
+        env:
+          GMAIL: ${{ secrets.GMAIL }}
+
+          # Optional tuning (override defaults)
+          MAX_STOCKS: "800"
+          MIN_DVOL_USD: "50000000"
+          MIN_DTE: "14"
+          MAX_DTE: "45"
+          MIN_OI: "300"
+          MIN_OPT_VOL: "50"
+          MAX_SPREAD_PCT: "0.06"
+          TOP_PER_TICKER: "2"
+          MAX_TOTAL_ROWS: "40"
+
+          # If you want only one side:
+          # CALLS_ONLY: "1"
+          # PUTS_ONLY: "1"
+
+          # Rate-limiting / safety
+          SLEEP_BETWEEN_TICKERS: "0.0"
+          MAX_TICKER_ERRORS: "50"
+
         run: |
-          python options_email_scanner.py
+          python options_screener.py
