@@ -48,4 +48,4 @@ jobs:
           MAX_TICKER_ERRORS: "50"
 
         run: |
-          python options_screener.py
+          python options_email_screener.py
