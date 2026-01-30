@@ -2,8 +2,9 @@
 """
 macro_event_mailer.py
 
-Daily email of upcoming US macro events & conferences
-that may move Gold and US equity markets.
+Daily email of upcoming US macro events, conferences,
+AND scheduled US President speeches that may move
+Gold and US equity markets.
 
 SMTP (same as portfolio_manager):
   SMTP_HOST
@@ -43,13 +44,14 @@ today = datetime.utcnow().date()
 cutoff = today + timedelta(days=LOOKAHEAD_DAYS)
 
 # =========================
-# CURRENT MACRO NARRATIVE
+# MACRO NARRATIVE ASSUMPTION
 # =========================
 """
-Baseline assumptions (can be edited anytime):
-- Inflation trending lower but sticky
-- Fed biased to HOLD / CUT later, not hike
-- Growth slowing but not collapsing
+Baseline:
+- Inflation easing but sticky
+- Fed biased to HOLD / CUT later
+- Elevated geopolitical risk
+- Debt & deficit sensitivity high
 """
 
 def most_likely_move(event_type: str) -> str:
@@ -60,17 +62,20 @@ def most_likely_move(event_type: str) -> str:
     if event_type == "FOMC":
         return "Gold: 🟢 Bullish | Stocks: 🟢 Bullish (dovish hold bias)"
     if event_type == "GDP":
-        return "Gold: 🟢 Bullish | Stocks: 🟡 Cautious (slowdown risk)"
+        return "Gold: 🟢 Bullish | Stocks: 🟡 Cautious"
     if event_type == "JACKSON":
         return "Gold: 🟢 Bullish | Stocks: 🟡 Volatile"
     if event_type == "AI_CONF":
         return "Gold: 🔴 Bearish | Stocks: 🟢 Bullish (risk-on)"
+    if event_type == "PRES_SPEECH":
+        return "Gold: 🟢 Bullish | Stocks: 🟡 Volatile (headline risk)"
     return "Event-dependent"
 
 # =========================
-# EVENT LIST (CURATED)
+# EVENT LIST (MACRO + PRESIDENT)
 # =========================
 EVENTS = [
+    # -------- MACRO --------
     {
         "event": "Non-Farm Payrolls (NFP)",
         "type": "NFP",
@@ -103,6 +108,8 @@ EVENTS = [
         "bias": "Dovish hold → Gold ↑ | Stocks ↑",
         "impacted": "GLD, TLT, SPY, QQQ"
     },
+
+    # -------- CONFERENCES --------
     {
         "event": "NVIDIA GTC (AI Conference)",
         "type": "AI_CONF",
@@ -111,16 +118,37 @@ EVENTS = [
         "bias": "Strong AI outlook → Tech ↑",
         "impacted": "NVDA, SMH, AMD, QQQ"
     },
+
+    # -------- PRESIDENTIAL SPEECHES --------
     {
-        "event": "Jackson Hole Symposium",
-        "type": "JACKSON",
-        "date": date(2026, 8, 20),
-        "expected": "Fed policy signaling",
-        "bias": "Dovish rhetoric → Gold ↑",
-        "impacted": "GLD, DXY, SPY, QQQ"
+        "event": "US President – State of the Union",
+        "type": "PRES_SPEECH",
+        "date": date(2026, 2, 3),
+        "expected": "Fiscal policy, debt, economy, geopolitics",
+        "bias": "Fiscal expansion / geopolitics → Gold ↑",
+        "impacted": "GLD, DXY, SPY, XLE, XLI"
+    },
+    {
+        "event": "US President – Budget / Debt Address",
+        "type": "PRES_SPEECH",
+        "date": date(2026, 3, 9),
+        "expected": "Deficit, spending priorities, taxes",
+        "bias": "Higher deficits → Gold ↑ | Bonds ↓",
+        "impacted": "GLD, TLT, SPY, XLF"
+    },
+    {
+        "event": "US President – Geopolitical Address",
+        "type": "PRES_SPEECH",
+        "date": date(2026, 4, 15),
+        "expected": "War, sanctions, foreign policy",
+        "bias": "Risk-off rhetoric → Gold ↑",
+        "impacted": "GLD, XLE, XLI, SPY"
     },
 ]
 
+# =========================
+# FILTER UPCOMING EVENTS
+# =========================
 rows = []
 for e in EVENTS:
     if today <= e["date"] <= cutoff:
@@ -142,9 +170,9 @@ if not rows:
 # HTML EMAIL (LIGHT THEME)
 # =========================
 def build_html(rows):
-    body_rows = ""
+    body = ""
     for r in rows:
-        body_rows += f"""
+        body += f"""
         <tr>
           <td><b>{r['event']}</b></td>
           <td>{r['expected']}</td>
@@ -174,24 +202,11 @@ def build_html(rows):
           box-shadow:0 10px 30px rgba(0,0,0,.08);
           padding:24px;
         }}
-        h1 {{
-          margin:0 0 6px 0;
-          font-size:22px;
-          color:#1f2937;
-        }}
-        .subtitle {{
-          color:#6b7280;
-          font-size:14px;
-          margin-bottom:18px;
-        }}
-        table {{
-          width:100%;
-          border-collapse:collapse;
-          font-size:14px;
-        }}
+        h1 {{ font-size:22px; margin:0 0 6px 0; }}
+        .subtitle {{ color:#6b7280; font-size:14px; margin-bottom:18px; }}
+        table {{ width:100%; border-collapse:collapse; font-size:14px; }}
         th {{
           background:#f1f5f9;
-          color:#334155;
           padding:10px;
           border-bottom:1px solid #e5e7eb;
           text-align:left;
@@ -201,21 +216,15 @@ def build_html(rows):
           border-bottom:1px solid #e5e7eb;
           vertical-align:top;
         }}
-        tr:hover {{
-          background:#f8fafc;
-        }}
-        .foot {{
-          margin-top:16px;
-          font-size:12px;
-          color:#6b7280;
-        }}
+        tr:hover {{ background:#f8fafc; }}
+        .foot {{ margin-top:16px; font-size:12px; color:#6b7280; }}
       </style>
     </head>
     <body>
       <div class="card">
-        <h1>📅 Macro Catalyst Watch</h1>
+        <h1>📅 Macro & Presidential Catalyst Watch</h1>
         <div class="subtitle">
-          Upcoming events likely to move <b>Gold</b> and <b>US markets</b>
+          Scheduled events likely to move <b>Gold</b> and <b>US markets</b>
           (next {LOOKAHEAD_DAYS} days)
         </div>
         <table>
@@ -227,11 +236,10 @@ def build_html(rows):
             <th>Most Likely Move</th>
             <th>Impacted</th>
           </tr>
-          {body_rows}
+          {body}
         </table>
         <div class="foot">
-          Direction reflects the <b>current macro narrative</b>.
-          Market reaction depends on surprise vs expectations.
+          Presidential remarks are <b>headline-driven</b> and can override macro data intraday.
         </div>
       </div>
     </body>
@@ -244,7 +252,7 @@ html_body = build_html(rows)
 # SEND EMAIL
 # =========================
 msg = MIMEText(html_body, "html")
-msg["Subject"] = f"📊 Macro Catalyst Calendar — {today.strftime('%b %d')}"
+msg["Subject"] = f"📊 Macro & Presidential Calendar — {today.strftime('%b %d')}"
 msg["From"] = formataddr((FROM_NAME, SMTP_USER))
 msg["To"] = EMAIL_TO
 
@@ -253,4 +261,4 @@ with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as s:
     s.login(SMTP_USER, SMTP_PASS)
     s.send_message(msg)
 
-print("Macro catalyst email sent successfully.")
+print("Macro + presidential catalyst email sent successfully.")
