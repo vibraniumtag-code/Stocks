@@ -8,10 +8,14 @@ on:
     - cron: "40 14 * * 1-5"
 
 jobs:
-  run:
-    runs-on: ubuntu-latest
-    env:
-      GMAIL: ${{ secrets.GMAIL }}
+
+  run: |
+    if [ -z "${GMAIL}" ]; then
+      echo "GMAIL is EMPTY in runner"
+      exit 1
+    else
+      echo "GMAIL is set (length: ${#GMAIL})"
+    fi
     steps:
       - name: Checkout
         uses: actions/checkout@v4
