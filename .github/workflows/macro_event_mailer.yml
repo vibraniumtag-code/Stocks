@@ -1,0 +1,32 @@
+name: Macro Catalyst Daily Email
+
+on:
+  schedule:
+    - cron: "30 12 * * *"   # 8:30am ET
+  workflow_dispatch:
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    env:
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: 465
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+      EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+      EMAIL_FROM_NAME: Options Daily Scanner
+      LOOKAHEAD_DAYS: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install requests beautifulsoup4
+
+      - name: Send macro calendar email
+        run: python macro_event_mailer.py
