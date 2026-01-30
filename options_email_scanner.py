@@ -132,6 +132,7 @@ def fetch_us_symbols() -> list[str]:
     """
     Pull NASDAQ + NYSE/AMEX symbols from NasdaqTrader official lists.
     Normalizes '.' -> '-' for yfinance (e.g., BRK.B => BRK-B).
+    Handles NaNs (floats) safely.
     """
     nasdaq_txt = _download_text(NASDAQ_LISTED_URL)
     other_txt  = _download_text(OTHER_LISTED_URL)
@@ -139,25 +140,46 @@ def fetch_us_symbols() -> list[str]:
     nasdaq_lines = [ln for ln in nasdaq_txt.splitlines() if ln and "File Creation Time" not in ln]
     other_lines  = [ln for ln in other_txt.splitlines() if ln and "File Creation Time" not in ln]
 
-    nasdaq_df = pd.read_csv(StringIO("\n".join(nasdaq_lines)), sep="|")
-    other_df  = pd.read_csv(StringIO("\n".join(other_lines)), sep="|")
+    nasdaq_df = pd.read_csv(StringIO("\n".join(nasdaq_lines)), sep="|", dtype=str)
+    other_df  = pd.read_csv(StringIO("\n".join(other_lines)),  sep="|", dtype=str)
 
+    # Filter test issues when column exists
     if "Test Issue" in nasdaq_df.columns:
-        nasdaq_df = nasdaq_df[nasdaq_df["Test Issue"] == "N"]
+        nasdaq_df = nasdaq_df[nasdaq_df["Test Issue"].fillna("") == "N"]
     if "Test Issue" in other_df.columns:
-        other_df = other_df[other_df["Test Issue"] == "N"]
+        other_df = other_df[other_df["Test Issue"].fillna("") == "N"]
 
-    nasdaq_syms = nasdaq_df.get("Symbol", pd.Series([], dtype=str)).astype(str).tolist()
-    other_syms  = other_df.get("ACT Symbol", pd.Series([], dtype=str)).astype(str).tolist()
+    nasdaq_syms = nasdaq_df.get("Symbol", pd.Series([], dtype=str)).fillna("").astype(str).tolist()
+    other_syms  = other_df.get("ACT Symbol", pd.Series([], dtype=str)).fillna("").astype(str).tolist()
 
     def normalize(sym: str) -> str:
-        sym = (sym or "").strip().replace(".", "-")
+        sym = (sym or "").strip()
+        if not sym:
+            return ""
+        sym = sym.replace(".", "-")
         return sym
 
-    syms = sorted({normalize(s) for s in (nasdaq_syms + other_syms) if s and s.isascii()})
-    # basic sanity filters (yfinance hates some exotic symbols)
-    syms = [s for s in syms if s and len(s) <= 6 and "^" not in s and "/" not in s]
-    return syms
+    out = set()
+    for s in nasdaq_syms + other_syms:
+        s = normalize(s)
+        if not s:
+            continue
+        # keep only plain ASCII symbols yfinance can handle
+        try:
+            if not str(s).isascii():
+                continue
+        except Exception:
+            continue
+
+        # basic sanity filters
+        if len(s) > 10:
+            continue
+        if "^" in s or "/" in s or " " in s:
+            continue
+
+        out.add(s)
+
+    return sorted(out)
 
 def pick_liquid_tickers(symbols: list[str]) -> pd.DataFrame:
     """
