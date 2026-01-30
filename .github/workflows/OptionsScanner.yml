@@ -5,12 +5,13 @@ on:
   schedule:
     # 9:40 AM Toronto time ≈ 14:40 UTC during EST (and 13:40 UTC during EDT)
     # If you want it to always match market time across DST, we can adjust with a DST-aware approach.
-    - cron: "40 10 * * 1-5"
+    - cron: "40 14 * * 1-5"
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    environment: GMAIL
+    env:
+      GMAIL: ${{ secrets.GMAIL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
