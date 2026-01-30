@@ -10,8 +10,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    env:
-      GMAIL: ${{ secrets.GMAIL }}
+    env: GMAIL
     steps:
       - name: Checkout
         uses: actions/checkout@v4
