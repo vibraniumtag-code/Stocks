@@ -1,7 +1,26 @@
 #!/usr/bin/env python3
-import os, json, math, time
+"""
+options_us_universe_scanner.py
+
+US universe options scanner (free data via yfinance) that emails a shortlist.
+
+✅ Uses SAME email env vars as your portfolio_manager scripts:
+    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
+
+✅ Universe:
+    - Downloads official symbol lists (NASDAQ + NYSE/AMEX) from NasdaqTrader
+    - Ranks by recent $ volume and scans the top N (configurable)
+    - Scans options chains for tradability filters + scores
+
+NOTE:
+- “Scan ALL US options for ALL tickers” is not feasible on GitHub Actions with free yfinance.
+  This script uses a realistic approach: scan the most liquid tickers first.
+"""
+
+import os, math, time
 from datetime import datetime, timezone
 from io import StringIO
+from urllib.request import urlopen, Request
 
 import pandas as pd
 import yfinance as yf
@@ -21,36 +40,190 @@ TOP_PER_TICKER  = int(os.getenv("TOP_PER_TICKER", "2"))
 MAX_TOTAL_ROWS  = int(os.getenv("MAX_TOTAL_ROWS", "40"))
 
 # Universe controls (critical to make this runnable)
-MAX_STOCKS      = int(os.getenv("MAX_STOCKS", "800"))          # how many tickers to scan after liquidity ranking
+MAX_STOCKS      = int(os.getenv("MAX_STOCKS", "600"))          # tickers to scan after liquidity ranking
 MIN_DVOL_USD    = float(os.getenv("MIN_DVOL_USD", "5e7"))      # min $ volume (e.g., 50,000,000)
 
-# If you want calls-only or puts-only
+# Calls-only or puts-only
 CALLS_ONLY      = os.getenv("CALLS_ONLY", "0") == "1"
 PUTS_ONLY       = os.getenv("PUTS_ONLY", "0") == "1"
 
 # Performance / reliability knobs
-SLEEP_BETWEEN_TICKERS = float(os.getenv("SLEEP_BETWEEN_TICKERS", "0.0"))  # seconds
-MAX_TICKER_ERRORS     = int(os.getenv("MAX_TICKER_ERRORS", "50"))         # stop if too many failures
+SLEEP_BETWEEN_TICKERS = float(os.getenv("SLEEP_BETWEEN_TICKERS", "0.0"))
+MAX_TICKER_ERRORS     = int(os.getenv("MAX_TICKER_ERRORS", "60"))
+
+# Email transport knobs (match portfolio_manager conventions)
+SMTP_TLS = os.getenv("SMTP_TLS", "").strip().lower()  # "", "starttls", "ssl"
+SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT", "30"))
 
 # Official symbol list sources (US)
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 OTHER_LISTED_URL  = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
 
 # -----------------------------
-# Helpers
+# Email helpers (PORTFOLIO MANAGER STYLE)
 # -----------------------------
-def parse_gmail_secret() -> dict:
-    raw = os.environ.get("GMAIL", "").strip()
-    if not raw:
-        raise RuntimeError("Missing env var GMAIL (GitHub Secret).")
+def parse_smtp_env() -> dict:
+    """
+    Same variables as your portfolio_manager scripts:
+      SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
+    """
+    host = os.environ.get("SMTP_HOST", "").strip()
+    port = os.environ.get("SMTP_PORT", "").strip()
+    user = os.environ.get("SMTP_USER", "").strip()
+    pwd  = os.environ.get("SMTP_PASS", "").strip()
+    to   = os.environ.get("EMAIL_TO", "").strip()
+
+    missing = [k for k, v in {
+        "SMTP_HOST": host,
+        "SMTP_PORT": port,
+        "SMTP_USER": user,
+        "SMTP_PASS": pwd,
+        "EMAIL_TO": to,
+    }.items() if not v]
+
+    if missing:
+        raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
     try:
-        cfg = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError("GMAIL secret is not valid JSON.") from e
-    for k in ("user", "app_password", "to"):
-        if k not in cfg or not str(cfg[k]).strip():
-            raise RuntimeError(f"GMAIL secret missing '{k}'.")
-    return cfg
+        port_i = int(port)
+    except ValueError as e:
+        raise RuntimeError("SMTP_PORT must be an integer") from e
+
+    return {"host": host, "port": port_i, "user": user, "pass": pwd, "to": to}
+
+def send_email_smtp(cfg: dict, subject: str, html_body: str):
+    """
+    Sends HTML-only email. Supports:
+      - SMTP_TLS=ssl      -> SMTP_SSL
+      - SMTP_TLS=starttls -> SMTP + STARTTLS
+      - SMTP_TLS=""       -> if port==465 uses SSL else STARTTLS (safe default)
+    """
+    msg = MIMEMultipart("alternative")
+    msg["From"] = cfg["user"]
+    msg["To"] = cfg["to"]
+    msg["Subject"] = subject
+    msg.attach(MIMEText(html_body, "html"))
+
+    tls_mode = SMTP_TLS
+    if not tls_mode:
+        tls_mode = "ssl" if int(cfg["port"]) == 465 else "starttls"
+
+    if tls_mode == "ssl":
+        with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=SMTP_TIMEOUT) as server:
+            server.login(cfg["user"], cfg["pass"])
+            server.sendmail(cfg["user"], [cfg["to"]], msg.as_string())
+    else:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=SMTP_TIMEOUT) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(cfg["user"], cfg["pass"])
+            server.sendmail(cfg["user"], [cfg["to"]], msg.as_string())
+
+# -----------------------------
+# Market helpers
+# -----------------------------
+def _download_text(url: str) -> str:
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(req, timeout=30) as resp:
+        return resp.read().decode("utf-8", errors="ignore")
+
+def fetch_us_symbols() -> list[str]:
+    """
+    Pull NASDAQ + NYSE/AMEX symbols from NasdaqTrader official lists.
+    Normalizes '.' -> '-' for yfinance (e.g., BRK.B => BRK-B).
+    """
+    nasdaq_txt = _download_text(NASDAQ_LISTED_URL)
+    other_txt  = _download_text(OTHER_LISTED_URL)
+
+    nasdaq_lines = [ln for ln in nasdaq_txt.splitlines() if ln and "File Creation Time" not in ln]
+    other_lines  = [ln for ln in other_txt.splitlines() if ln and "File Creation Time" not in ln]
+
+    nasdaq_df = pd.read_csv(StringIO("\n".join(nasdaq_lines)), sep="|")
+    other_df  = pd.read_csv(StringIO("\n".join(other_lines)), sep="|")
+
+    if "Test Issue" in nasdaq_df.columns:
+        nasdaq_df = nasdaq_df[nasdaq_df["Test Issue"] == "N"]
+    if "Test Issue" in other_df.columns:
+        other_df = other_df[other_df["Test Issue"] == "N"]
+
+    nasdaq_syms = nasdaq_df.get("Symbol", pd.Series([], dtype=str)).astype(str).tolist()
+    other_syms  = other_df.get("ACT Symbol", pd.Series([], dtype=str)).astype(str).tolist()
+
+    def normalize(sym: str) -> str:
+        sym = (sym or "").strip().replace(".", "-")
+        return sym
+
+    syms = sorted({normalize(s) for s in (nasdaq_syms + other_syms) if s and s.isascii()})
+    # basic sanity filters (yfinance hates some exotic symbols)
+    syms = [s for s in syms if s and len(s) <= 6 and "^" not in s and "/" not in s]
+    return syms
+
+def pick_liquid_tickers(symbols: list[str]) -> pd.DataFrame:
+    """
+    Batch-download last close + volume and compute $ volume, then select top.
+    """
+    rows = []
+    chunk = 200
+
+    for i in range(0, len(symbols), chunk):
+        batch = symbols[i:i + chunk]
+        try:
+            data = yf.download(
+                tickers=batch,
+                period="2d",
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=False,
+                threads=True,
+                progress=False
+            )
+        except Exception:
+            continue
+
+        if data is None or data.empty:
+            continue
+
+        if isinstance(data.columns, pd.MultiIndex):
+            # Case: columns (Field, Ticker)
+            if "Close" in data.columns.get_level_values(0):
+                for t in batch:
+                    try:
+                        close = float(data["Close"][t].dropna().iloc[-1])
+                        vol   = float(data["Volume"][t].dropna().iloc[-1])
+                        dvol  = close * vol
+                        if close > 0 and vol > 0:
+                            rows.append((t, close, vol, dvol))
+                    except Exception:
+                        pass
+            else:
+                # columns (Ticker, Field)
+                for t in batch:
+                    try:
+                        close = float(data[t]["Close"].dropna().iloc[-1])
+                        vol   = float(data[t]["Volume"].dropna().iloc[-1])
+                        dvol  = close * vol
+                        if close > 0 and vol > 0:
+                            rows.append((t, close, vol, dvol))
+                    except Exception:
+                        pass
+        else:
+            # single ticker fallback
+            try:
+                close = float(data["Close"].dropna().iloc[-1])
+                vol   = float(data["Volume"].dropna().iloc[-1])
+                dvol  = close * vol
+                if close > 0 and vol > 0:
+                    rows.append((batch[0], close, vol, dvol))
+            except Exception:
+                pass
+
+    df = pd.DataFrame(rows, columns=["ticker", "close", "volume", "dvol_usd"])
+    if df.empty:
+        return df
+
+    df = df[df["dvol_usd"] >= MIN_DVOL_USD].sort_values("dvol_usd", ascending=False)
+    return df.head(MAX_STOCKS).reset_index(drop=True)
 
 def dte(exp_str: str) -> int:
     exp_dt = datetime.strptime(exp_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -117,7 +290,7 @@ def to_html_table(df: pd.DataFrame) -> str:
     """
 
     fmt = df.copy()
-    for c in ["strike","mid","spread_pct","score","dvol_usd"]:
+    for c in ["strike", "mid", "spread_pct", "score", "dvol_usd"]:
         if c in fmt.columns:
             fmt[c] = pd.to_numeric(fmt[c], errors="coerce")
 
@@ -133,11 +306,11 @@ def to_html_table(df: pd.DataFrame) -> str:
     if "dvol_usd" in fmt.columns:
         fmt["dvol_usd"] = (fmt["dvol_usd"] / 1e6).round(1).astype(str) + "M"
 
-    cols = ["ticker","side","exp","dte","strike","mid","spread_pct","OI","vol","score","dvol_usd"]
+    cols = ["ticker", "side", "exp", "dte", "strike", "mid", "spread_pct", "OI", "vol", "score", "dvol_usd"]
     cols = [c for c in cols if c in fmt.columns]
 
     def td_class(col):
-        return "num" if col in {"dte","strike","mid","OI","vol","score","spread_pct","dvol_usd"} else ""
+        return "num" if col in {"dte", "strike", "mid", "OI", "vol", "score", "spread_pct", "dvol_usd"} else ""
 
     header = "<tr>" + "".join([f"<th>{c.upper()}</th>" for c in cols]) + "</tr>"
     rows = []
@@ -146,149 +319,27 @@ def to_html_table(df: pd.DataFrame) -> str:
 
     return styles + f"<table>{header}{''.join(rows)}</table>"
 
-def send_email(gmail_cfg: dict, subject: str, html_body: str):
-    msg = MIMEMultipart("alternative")
-    msg["From"] = gmail_cfg["user"]
-    msg["To"] = gmail_cfg["to"]
-    msg["Subject"] = subject
-    msg.attach(MIMEText(html_body, "html"))
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(gmail_cfg["user"], gmail_cfg["app_password"])
-        server.sendmail(gmail_cfg["user"], [gmail_cfg["to"]], msg.as_string())
-
-def fetch_us_symbols() -> list[str]:
-    """
-    Pull NASDAQ + NYSE/AMEX symbols from NasdaqTrader official lists.
-    Filters out test issues and non-common-stock types where possible.
-    """
-    def _download_text(url: str) -> str:
-        # simple urllib to avoid extra deps
-        from urllib.request import urlopen, Request
-        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urlopen(req, timeout=30) as resp:
-            return resp.read().decode("utf-8", errors="ignore")
-
-    nasdaq_txt = _download_text(NASDAQ_LISTED_URL)
-    other_txt  = _download_text(OTHER_LISTED_URL)
-
-    # nasdaqlisted.txt is pipe-delimited with header line; ends with "File Creation Time"
-    nasdaq_lines = [ln for ln in nasdaq_txt.splitlines() if ln and "File Creation Time" not in ln]
-    nasdaq_df = pd.read_csv(StringIO("\n".join(nasdaq_lines)), sep="|")
-    # Basic filters
-    if "Test Issue" in nasdaq_df.columns:
-        nasdaq_df = nasdaq_df[nasdaq_df["Test Issue"] == "N"]
-    if "ETF" in nasdaq_df.columns:
-        # keep ETFs too (SPY/QQQ etc are options-heavy)
-        pass
-    nasdaq_syms = nasdaq_df["Symbol"].astype(str).tolist()
-
-    # otherlisted.txt: pipe-delimited; includes NYSE/AMEX + others; has "Test Issue" col
-    other_lines = [ln for ln in other_txt.splitlines() if ln and "File Creation Time" not in ln]
-    other_df = pd.read_csv(StringIO("\n".join(other_lines)), sep="|")
-    if "Test Issue" in other_df.columns:
-        other_df = other_df[other_df["Test Issue"] == "N"]
-    # Exclude "NextShares" etc by filtering out symbols with weird chars
-    other_syms = other_df["ACT Symbol"].astype(str).tolist()
-
-    # Normalize: yfinance uses '-' instead of '.' for class shares (BRK.B -> BRK-B)
-    def normalize(sym: str) -> str:
-        sym = sym.strip()
-        sym = sym.replace(".", "-")
-        return sym
-
-    syms = sorted({normalize(s) for s in (nasdaq_syms + other_syms) if s and s.isascii()})
-    # Remove some known problematic symbols
-    syms = [s for s in syms if s not in {"", "N/A"} and len(s) <= 6]
-    return syms
-
-def pick_liquid_tickers(symbols: list[str]) -> pd.DataFrame:
-    """
-    Batch-download last close + volume and compute $ volume, then select top.
-    This step makes the full scan feasible.
-    """
-    rows = []
-    chunk = 200
-
-    for i in range(0, len(symbols), chunk):
-        batch = symbols[i:i+chunk]
-        try:
-            data = yf.download(
-                tickers=batch,
-                period="2d",
-                interval="1d",
-                group_by="ticker",
-                auto_adjust=False,
-                threads=True,
-                progress=False
-            )
-        except Exception:
-            continue
-
-        # yfinance returns:
-        # - for multi tickers: columns are MultiIndex (Field, Ticker) or (Ticker, Field) depending
-        # We'll handle both.
-        if isinstance(data.columns, pd.MultiIndex):
-            # Try to standardize to [ticker][field]
-            # Case A: first level is fields
-            if "Close" in data.columns.get_level_values(0):
-                # columns: (Field, Ticker)
-                for t in batch:
-                    try:
-                        close = float(data["Close"][t].dropna().iloc[-1])
-                        vol   = float(data["Volume"][t].dropna().iloc[-1])
-                        dvol  = close * vol
-                        rows.append((t, close, vol, dvol))
-                    except Exception:
-                        pass
-            else:
-                # columns: (Ticker, Field)
-                for t in batch:
-                    try:
-                        close = float(data[t]["Close"].dropna().iloc[-1])
-                        vol   = float(data[t]["Volume"].dropna().iloc[-1])
-                        dvol  = close * vol
-                        rows.append((t, close, vol, dvol))
-                    except Exception:
-                        pass
-        else:
-            # single ticker fallback (unlikely in batch mode)
-            try:
-                close = float(data["Close"].dropna().iloc[-1])
-                vol   = float(data["Volume"].dropna().iloc[-1])
-                dvol  = close * vol
-                rows.append((batch[0], close, vol, dvol))
-            except Exception:
-                pass
-
-    df = pd.DataFrame(rows, columns=["ticker", "close", "volume", "dvol_usd"])
-    if df.empty:
-        return df
-
-    df = df[df["dvol_usd"] >= MIN_DVOL_USD].sort_values("dvol_usd", ascending=False)
-    return df.head(MAX_STOCKS).reset_index(drop=True)
-
 # -----------------------------
-# Main scan
+# Main
 # -----------------------------
 def main():
-    gmail_cfg = parse_gmail_secret()
+    smtp_cfg = parse_smtp_env()
     run_ts = datetime.now().strftime("%Y-%m-%d %H:%M %Z").strip()
 
-    # 1) Build universe
+    # 1) Build US ticker universe
     symbols = fetch_us_symbols()
 
-    # 2) Pick liquid subset
+    # 2) Pick liquid subset (makes it feasible on Actions)
     liquid = pick_liquid_tickers(symbols)
     if liquid.empty:
         html = f"""
         <html><body>
           <h2>Daily Options Shortlist (US Universe)</h2>
           <p style="color:#444;font-size:13px;">Run: {run_ts}</p>
-          <p>Could not build a liquid ticker list today (data source issue). Try again later.</p>
+          <p>Could not build a liquid ticker list today (data source issue).</p>
         </body></html>
         """
-        send_email(gmail_cfg, f"Options Shortlist — {datetime.now().strftime('%Y-%m-%d')}", html)
+        send_email_smtp(smtp_cfg, f"Options Shortlist (US) — {datetime.now().strftime('%Y-%m-%d')}", html)
         print("Email sent (no liquid list).")
         return
 
@@ -298,8 +349,8 @@ def main():
     all_rows = []
     errors = 0
 
-    # 3) Options scan
-    for idx, t in enumerate(tickers, start=1):
+    # 3) Scan options chains
+    for t in tickers:
         if errors >= MAX_TICKER_ERRORS:
             break
 
@@ -309,7 +360,7 @@ def main():
             if not px:
                 continue
 
-            expirations = list(tk.options)  # may be empty if no options
+            expirations = list(tk.options)  # empty if no options
             if not expirations:
                 continue
 
@@ -341,6 +392,7 @@ def main():
                     df["side"] = side
                     df["exp"] = exp
 
+                    # Tradability filters
                     df = df[
                         (df["openInterest"].fillna(0) >= MIN_OI) &
                         (df["volume"].fillna(0) >= MIN_OPT_VOL) &
@@ -385,7 +437,7 @@ def main():
         <span class='badge'>liquidity-ranked</span>
         <span class='badge warn'>not financial advice</span><br/>
         Run: {run_ts}<br/>
-        Universe: official NASDAQ/NYSE/AMEX symbols → top {len(tickers)} by $ volume (≥ ${MIN_DVOL_USD:,.0f}/day)
+        Universe: NASDAQ/NYSE/AMEX symbols → top {len(tickers)} by $ volume (≥ ${MIN_DVOL_USD:,.0f}/day)
       </p>
     """
 
@@ -401,21 +453,20 @@ def main():
         </body></html>
         """
     else:
-        table_html = to_html_table(out)
         html = f"""
         <html><body>
           <h2>{title}</h2>
           {subtitle}
           <p class='meta small'>
             Filters: {MIN_DTE}-{MAX_DTE} DTE, OI≥{MIN_OI}, opt vol≥{MIN_OPT_VOL}, spread≤{int(MAX_SPREAD_PCT*100)}% of mid.
-            Score ranks for tradability (liquidity + fill quality + near-ATM + DTE preference).
+            Score ranks tradability (liquidity + fill quality + near-ATM + DTE preference).
           </p>
-          {table_html}
+          {to_html_table(out)}
         </body></html>
         """
 
     subject = f"Options Shortlist (US) — {datetime.now().strftime('%Y-%m-%d')}"
-    send_email(gmail_cfg, subject, html)
+    send_email_smtp(smtp_cfg, subject, html)
     print(f"Email sent OK. Rows={len(out)}  Tickers_scanned={len(tickers)}  Errors={errors}")
 
 if __name__ == "__main__":
