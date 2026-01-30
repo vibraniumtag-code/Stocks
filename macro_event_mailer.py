@@ -145,21 +145,77 @@ def build_html(rows):
     return f"""
     <html>
     <head>
+    <meta charset="utf-8"/>
     <style>
-      body {{ background:#0b1220; color:#e5e7eb; font-family:system-ui; }}
-      .card {{ background:#111827; padding:20px; border-radius:14px; }}
-      h1 {{ color:#facc15; }}
-      table {{ width:100%; border-collapse:collapse; margin-top:15px; }}
-      th, td {{ padding:10px; border-bottom:1px solid #1f2937; text-align:left; }}
-      th {{ color:#93c5fd; }}
-      tr:hover {{ background:#1f2937; }}
-      .foot {{ color:#9ca3af; font-size:12px; margin-top:15px; }}
+      body {{
+        background:#f5f7fb;
+        font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial, sans-serif;
+        color:#111827;
+        padding:20px;
+      }}
+
+      .card {{
+        max-width: 980px;
+        margin: auto;
+        background:#ffffff;
+        border-radius:14px;
+        box-shadow:0 10px 30px rgba(0,0,0,.08);
+        padding:24px;
+      }}
+
+      h1 {{
+        margin:0 0 6px 0;
+        font-size:22px;
+        color:#1f2937;
+      }}
+
+      .subtitle {{
+        color:#6b7280;
+        font-size:14px;
+        margin-bottom:18px;
+      }}
+
+      table {{
+        width:100%;
+        border-collapse:collapse;
+        font-size:14px;
+      }}
+
+      th {{
+        background:#f1f5f9;
+        color:#334155;
+        text-align:left;
+        padding:10px;
+        border-bottom:1px solid #e5e7eb;
+        font-weight:600;
+      }}
+
+      td {{
+        padding:10px;
+        border-bottom:1px solid #e5e7eb;
+        vertical-align:top;
+      }}
+
+      tr:hover {{
+        background:#f8fafc;
+      }}
+
+      .foot {{
+        margin-top:16px;
+        font-size:12px;
+        color:#6b7280;
+      }}
     </style>
     </head>
+
     <body>
       <div class="card">
         <h1>📅 Macro Catalyst Watch</h1>
-        <p>Events likely to move <b>Gold & US Markets</b> in the next {LOOKAHEAD_DAYS} days</p>
+        <div class="subtitle">
+          Upcoming events likely to move <b>Gold</b> and <b>US markets</b>
+          (next {LOOKAHEAD_DAYS} days)
+        </div>
+
         <table>
           <tr>
             <th>Event</th>
@@ -171,16 +227,15 @@ def build_html(rows):
           </tr>
           {tr}
         </table>
+
         <div class="foot">
-          Direction reflects <b>current macro narrative</b>. Market reaction depends on surprise vs expectations.
+          Market direction reflects the <b>current macro narrative</b>.  
+          Actual reaction depends on surprise vs expectations.
         </div>
       </div>
     </body>
     </html>
     """
-
-html_body = build_html(rows)
-
 # ---------- SEND ----------
 msg = MIMEText(html_body, "html")
 msg["Subject"] = f"📊 Macro Catalyst Calendar — {today.strftime('%b %d')}"
