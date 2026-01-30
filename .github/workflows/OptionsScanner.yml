@@ -9,6 +9,7 @@ on:
 jobs:
   run-scan:
     runs-on: ubuntu-latest
+    environment: GMAIL
 
     steps:
       - name: Checkout
