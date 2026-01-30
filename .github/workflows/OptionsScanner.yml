@@ -1,14 +1,17 @@
+# .github/workflows/options_us_scan.yml
 name: Options US Universe Scan
 
 on:
   schedule:
-    # Weekdays 7:15pm Toronto time-ish in winter = 00:15 UTC (adjust if you want)
-    - cron: "15 0 * * 1-5"
+    - cron: "15 0 * * 1-5"  # weekdays; adjust to taste
   workflow_dispatch:
 
 jobs:
   run-scan:
     runs-on: ubuntu-latest
+
+    # If YOU are using an Environment (like your portfolio manager setup),
+    # keep this line and make sure the secrets exist in that Environment.
     environment: GMAIL
 
     steps:
@@ -27,10 +30,15 @@ jobs:
 
       - name: Run scanner
         env:
-          GMAIL: ${{ secrets.GMAIL }}
+          # Same variables as portfolio_manager scripts:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
 
-          # Optional tuning (override defaults)
-          MAX_STOCKS: "800"
+          # Optional tuning
+          MAX_STOCKS: "600"
           MIN_DVOL_USD: "50000000"
           MIN_DTE: "14"
           MAX_DTE: "45"
@@ -39,14 +47,10 @@ jobs:
           MAX_SPREAD_PCT: "0.06"
           TOP_PER_TICKER: "2"
           MAX_TOTAL_ROWS: "40"
-
-          # If you want only one side:
           # CALLS_ONLY: "1"
           # PUTS_ONLY: "1"
-
-          # Rate-limiting / safety
-          SLEEP_BETWEEN_TICKERS: "0.0"
-          MAX_TICKER_ERRORS: "50"
+          # SMTP_TLS: "ssl"        # or "starttls"
+          # SLEEP_BETWEEN_TICKERS: "0.05"
 
         run: |
           python options_email_scanner.py
