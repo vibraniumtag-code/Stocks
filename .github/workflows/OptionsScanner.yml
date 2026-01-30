@@ -10,7 +10,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    env: GMAIL
+    environment: GMAIL
     steps:
       - name: Checkout
         uses: actions/checkout@v4
