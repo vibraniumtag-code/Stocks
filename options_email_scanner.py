@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
 """
-options_us_universe_scanner.py
+options_email_scanner.py
 
-US universe options scanner (free data via yfinance) that emails a shortlist.
+US options shortlist scanner (yfinance) + Portfolio-Manager-style email.
 
-✅ Uses SAME email env vars as your portfolio_manager scripts:
-    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
+✅ Email env vars (same as your portfolio_manager scripts):
+  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
+  Optional: SMTP_TLS=ssl|starttls  (default auto: 465->ssl else starttls)
 
 ✅ Universe:
-    - Downloads official symbol lists (NASDAQ + NYSE/AMEX) from NasdaqTrader
-    - Ranks by recent $ volume and scans the top N (configurable)
-    - Scans options chains for tradability filters + scores
+  - Official NASDAQ/NYSE/AMEX symbol lists (NasdaqTrader)
+  - Rank by recent $ volume and scan top MAX_STOCKS (configurable)
 
-NOTE:
-- “Scan ALL US options for ALL tickers” is not feasible on GitHub Actions with free yfinance.
-  This script uses a realistic approach: scan the most liquid tickers first.
+✅ Filters + scoring:
+  - Pass 1: strict settings from env/defaults
+  - If no matches -> Pass 2: relaxed settings automatically (so you don’t get “no matches” often)
+
+✅ “From” display name:
+  - Email shows as: Options daily Scanner <SMTP_USER>
+
+Notes:
+- Scanning every US option for every ticker is not feasible on Actions with free data.
+  This scans the most liquid tickers first (best bang-for-buck).
 """
 
 import os, math, time
@@ -28,45 +35,46 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-# -----------------------------
-# Config (env overrides allowed)
-# -----------------------------
-MIN_DTE         = int(os.getenv("MIN_DTE", "14"))
-MAX_DTE         = int(os.getenv("MAX_DTE", "45"))
-MIN_OI          = int(os.getenv("MIN_OI", "300"))
-MIN_OPT_VOL     = int(os.getenv("MIN_OPT_VOL", "50"))
-MAX_SPREAD_PCT  = float(os.getenv("MAX_SPREAD_PCT", "0.06"))   # 6% of mid
-TOP_PER_TICKER  = int(os.getenv("TOP_PER_TICKER", "2"))
-MAX_TOTAL_ROWS  = int(os.getenv("MAX_TOTAL_ROWS", "40"))
 
-# Universe controls (critical to make this runnable)
-MAX_STOCKS      = int(os.getenv("MAX_STOCKS", "600"))          # tickers to scan after liquidity ranking
-MIN_DVOL_USD    = float(os.getenv("MIN_DVOL_USD", "5e7"))      # min $ volume (e.g., 50,000,000)
+# =============================================================================
+# Config (env overrides allowed)
+# =============================================================================
+# Pass-1 (strict) defaults
+MIN_DTE_1         = int(os.getenv("MIN_DTE", "14"))
+MAX_DTE_1         = int(os.getenv("MAX_DTE", "45"))
+MIN_OI_1          = int(os.getenv("MIN_OI", "300"))
+MIN_OPT_VOL_1     = int(os.getenv("MIN_OPT_VOL", "50"))
+MAX_SPREAD_PCT_1  = float(os.getenv("MAX_SPREAD_PCT", "0.06"))  # 6% of mid
+
+TOP_PER_TICKER    = int(os.getenv("TOP_PER_TICKER", "3"))
+MAX_TOTAL_ROWS    = int(os.getenv("MAX_TOTAL_ROWS", "30"))
+
+# Universe controls
+MAX_STOCKS        = int(os.getenv("MAX_STOCKS", "600"))         # liquid tickers to scan
+MIN_DVOL_USD      = float(os.getenv("MIN_DVOL_USD", "5e7"))     # 50M/day by default
 
 # Calls-only or puts-only
-CALLS_ONLY      = os.getenv("CALLS_ONLY", "0") == "1"
-PUTS_ONLY       = os.getenv("PUTS_ONLY", "0") == "1"
+CALLS_ONLY        = os.getenv("CALLS_ONLY", "0") == "1"
+PUTS_ONLY         = os.getenv("PUTS_ONLY", "0") == "1"
 
-# Performance / reliability knobs
+# Reliability knobs
 SLEEP_BETWEEN_TICKERS = float(os.getenv("SLEEP_BETWEEN_TICKERS", "0.0"))
-MAX_TICKER_ERRORS     = int(os.getenv("MAX_TICKER_ERRORS", "60"))
+MAX_TICKER_ERRORS     = int(os.getenv("MAX_TICKER_ERRORS", "80"))
 
-# Email transport knobs (match portfolio_manager conventions)
-SMTP_TLS = os.getenv("SMTP_TLS", "").strip().lower()  # "", "starttls", "ssl"
-SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT", "30"))
+# Email knobs
+SMTP_TLS         = os.getenv("SMTP_TLS", "").strip().lower()  # "", "ssl", "starttls"
+SMTP_TIMEOUT     = int(os.getenv("SMTP_TIMEOUT", "30"))
+FROM_NAME        = os.getenv("FROM_NAME", "Options daily Scanner")
 
-# Official symbol list sources (US)
+# Symbol list sources
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 OTHER_LISTED_URL  = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
 
-# -----------------------------
-# Email helpers (PORTFOLIO MANAGER STYLE)
-# -----------------------------
+
+# =============================================================================
+# Email (same env interface as portfolio_manager)
+# =============================================================================
 def parse_smtp_env() -> dict:
-    """
-    Same variables as your portfolio_manager scripts:
-      SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO
-    """
     host = os.environ.get("SMTP_HOST", "").strip()
     port = os.environ.get("SMTP_PORT", "").strip()
     user = os.environ.get("SMTP_USER", "").strip()
@@ -91,22 +99,17 @@ def parse_smtp_env() -> dict:
 
     return {"host": host, "port": port_i, "user": user, "pass": pwd, "to": to}
 
+
 def send_email_smtp(cfg: dict, subject: str, html_body: str):
-    """
-    Sends HTML-only email. Supports:
-      - SMTP_TLS=ssl      -> SMTP_SSL
-      - SMTP_TLS=starttls -> SMTP + STARTTLS
-      - SMTP_TLS=""       -> if port==465 uses SSL else STARTTLS (safe default)
-    """
     msg = MIMEMultipart("alternative")
-    msg["From"] = cfg["user"]
+
+    # Display name (works in most clients; Gmail may still apply account-level name)
+    msg["From"] = f'{FROM_NAME} <{cfg["user"]}>'
     msg["To"] = cfg["to"]
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html"))
 
-    tls_mode = SMTP_TLS
-    if not tls_mode:
-        tls_mode = "ssl" if int(cfg["port"]) == 465 else "starttls"
+    tls_mode = SMTP_TLS or ("ssl" if int(cfg["port"]) == 465 else "starttls")
 
     if tls_mode == "ssl":
         with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=SMTP_TIMEOUT) as server:
@@ -120,19 +123,20 @@ def send_email_smtp(cfg: dict, subject: str, html_body: str):
             server.login(cfg["user"], cfg["pass"])
             server.sendmail(cfg["user"], [cfg["to"]], msg.as_string())
 
-# -----------------------------
-# Market helpers
-# -----------------------------
+
+# =============================================================================
+# Universe helpers
+# =============================================================================
 def _download_text(url: str) -> str:
     req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urlopen(req, timeout=30) as resp:
         return resp.read().decode("utf-8", errors="ignore")
 
+
 def fetch_us_symbols() -> list[str]:
     """
-    Pull NASDAQ + NYSE/AMEX symbols from NasdaqTrader official lists.
-    Normalizes '.' -> '-' for yfinance (e.g., BRK.B => BRK-B).
-    Handles NaNs (floats) safely.
+    Official NASDAQ + NYSE/AMEX lists. Normalizes '.' -> '-' for yfinance.
+    Hardened against NaNs / odd rows.
     """
     nasdaq_txt = _download_text(NASDAQ_LISTED_URL)
     other_txt  = _download_text(OTHER_LISTED_URL)
@@ -143,7 +147,6 @@ def fetch_us_symbols() -> list[str]:
     nasdaq_df = pd.read_csv(StringIO("\n".join(nasdaq_lines)), sep="|", dtype=str)
     other_df  = pd.read_csv(StringIO("\n".join(other_lines)),  sep="|", dtype=str)
 
-    # Filter test issues when column exists
     if "Test Issue" in nasdaq_df.columns:
         nasdaq_df = nasdaq_df[nasdaq_df["Test Issue"].fillna("") == "N"]
     if "Test Issue" in other_df.columns:
@@ -156,34 +159,29 @@ def fetch_us_symbols() -> list[str]:
         sym = (sym or "").strip()
         if not sym:
             return ""
-        sym = sym.replace(".", "-")
-        return sym
+        return sym.replace(".", "-")
 
     out = set()
     for s in nasdaq_syms + other_syms:
         s = normalize(s)
         if not s:
             continue
-        # keep only plain ASCII symbols yfinance can handle
-        try:
-            if not str(s).isascii():
-                continue
-        except Exception:
-            continue
-
-        # basic sanity filters
-        if len(s) > 10:
+        # yfinance-friendly sanity checks
+        if not s.isascii():
             continue
         if "^" in s or "/" in s or " " in s:
             continue
-
+        # Keep a bit looser length; class shares can be longer
+        if len(s) > 12:
+            continue
         out.add(s)
 
     return sorted(out)
 
+
 def pick_liquid_tickers(symbols: list[str]) -> pd.DataFrame:
     """
-    Batch-download last close + volume and compute $ volume, then select top.
+    Rank by recent $ volume using yfinance batch download.
     """
     rows = []
     chunk = 200
@@ -207,8 +205,9 @@ def pick_liquid_tickers(symbols: list[str]) -> pd.DataFrame:
             continue
 
         if isinstance(data.columns, pd.MultiIndex):
-            # Case: columns (Field, Ticker)
+            # columns can be (Field, Ticker) or (Ticker, Field)
             if "Close" in data.columns.get_level_values(0):
+                # (Field, Ticker)
                 for t in batch:
                     try:
                         close = float(data["Close"][t].dropna().iloc[-1])
@@ -219,7 +218,7 @@ def pick_liquid_tickers(symbols: list[str]) -> pd.DataFrame:
                     except Exception:
                         pass
             else:
-                # columns (Ticker, Field)
+                # (Ticker, Field)
                 for t in batch:
                     try:
                         close = float(data[t]["Close"].dropna().iloc[-1])
@@ -230,7 +229,7 @@ def pick_liquid_tickers(symbols: list[str]) -> pd.DataFrame:
                     except Exception:
                         pass
         else:
-            # single ticker fallback
+            # single ticker case
             try:
                 close = float(data["Close"].dropna().iloc[-1])
                 vol   = float(data["Volume"].dropna().iloc[-1])
@@ -247,10 +246,15 @@ def pick_liquid_tickers(symbols: list[str]) -> pd.DataFrame:
     df = df[df["dvol_usd"] >= MIN_DVOL_USD].sort_values("dvol_usd", ascending=False)
     return df.head(MAX_STOCKS).reset_index(drop=True)
 
+
+# =============================================================================
+# Option scan helpers
+# =============================================================================
 def dte(exp_str: str) -> int:
     exp_dt = datetime.strptime(exp_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     now = datetime.now(timezone.utc)
     return (exp_dt - now).days
+
 
 def safe_last_price(tk: yf.Ticker) -> float | None:
     try:
@@ -267,7 +271,15 @@ def safe_last_price(tk: yf.Ticker) -> float | None:
         pass
     return None
 
+
 def score_contract(row, px: float, days: int) -> float:
+    """
+    Tradability score:
+      - tighter spreads better
+      - higher OI/volume better
+      - closer to ATM better
+      - DTE closer to ~28 better
+    """
     bid = float(row.get("bid", 0) or 0)
     ask = float(row.get("ask", 0) or 0)
     mid = (bid + ask) / 2
@@ -294,84 +306,220 @@ def score_contract(row, px: float, days: int) -> float:
         dte_component * 2
     )
 
-def to_html_table(df: pd.DataFrame) -> str:
-    styles = """
-    <style>
-      body { font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial; color:#111; }
-      .meta { margin: 0 0 10px 0; color:#444; font-size: 13px; }
-      table { border-collapse: collapse; width: 100%; }
-      th, td { border: 1px solid #e5e5e5; padding: 8px 10px; font-size: 13px; }
-      th { background: #f6f6f6; text-align: left; }
-      tr:nth-child(even) { background: #fcfcfc; }
-      .num { text-align: right; font-variant-numeric: tabular-nums; }
-      .badge { display:inline-block; padding:2px 8px; border-radius: 999px; font-size: 12px; background:#eef2ff; }
-      .warn { background:#fff7ed; }
-      .ok { background:#ecfdf5; }
-      .small { font-size: 12px; color:#555; }
-    </style>
+
+# =============================================================================
+# Portfolio-manager-like HTML theme (dark + cards + badges)
+# =============================================================================
+def build_email_html(title: str, run_ts: str, meta_lines: list[str], table_html: str | None, footer_note: str) -> str:
+    meta = "".join([f"<div class='meta-row'>{ln}</div>" for ln in meta_lines])
+
+    table_block = ""
+    if table_html:
+        table_block = f"""
+          <div class="card">
+            <div class="card-title">Top contracts</div>
+            <div class="table-wrap">
+              {table_html}
+            </div>
+          </div>
+        """
+    else:
+        table_block = f"""
+          <div class="card">
+            <div class="card-title">No matches</div>
+            <div class="empty">No contracts matched the filters today.</div>
+          </div>
+        """
+
+    return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>{title}</title>
+  <style>
+    :root {{
+      --bg:#0b1220;
+      --card:#0f172a;
+      --muted:#94a3b8;
+      --text:#e2e8f0;
+      --line:#1f2a44;
+      --good:#22c55e;
+      --warn:#f59e0b;
+      --bad:#ef4444;
+      --chip:#111c34;
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
+      --radius: 14px;
+      --font: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial;
+    }}
+    *{{box-sizing:border-box}}
+    body {{
+      margin:0; padding:24px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+    }}
+    .wrap {{max-width: 980px; margin:0 auto;}}
+    .header {{
+      display:flex; align-items:flex-start; justify-content:space-between;
+      gap:16px; margin-bottom: 14px;
+    }}
+    .hgroup h1 {{
+      margin:0; font-size: 22px; letter-spacing: .2px;
+    }}
+    .sub {{
+      margin-top:6px; color: var(--muted); font-size: 13px; line-height: 1.4;
+    }}
+    .chips {{display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;}}
+    .chip {{
+      background: rgba(255,255,255,.07);
+      border: 1px solid rgba(255,255,255,.08);
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+    }}
+    .chip.warn {{border-color: rgba(245,158,11,.35);}}
+    .chip.ok {{border-color: rgba(34,197,94,.35);}}
+    .card {{
+      background: var(--card);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 14px 14px;
+      margin: 14px 0;
+    }}
+    .card-title {{
+      font-size: 14px; font-weight: 700; margin: 2px 0 10px 0;
+      color: var(--text);
+    }}
+    .meta-row {{
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      margin: 4px 0;
+    }}
+    .table-wrap {{
+      overflow-x:auto;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.03);
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 860px;
+    }}
+    th, td {{
+      padding: 10px 10px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      font-size: 13px;
+    }}
+    th {{
+      text-align:left;
+      color: #cbd5e1;
+      background: rgba(255,255,255,.04);
+      position: sticky;
+      top: 0;
+    }}
+    tr:hover td {{
+      background: rgba(255,255,255,.03);
+    }}
+    .num {{ text-align:right; font-variant-numeric: tabular-nums; }}
+    .empty {{
+      color: var(--muted);
+      padding: 8px 2px;
+      font-size: 13px;
+    }}
+    .footer {{
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 10px;
+      line-height: 1.5;
+    }}
+    .hr {{
+      height: 1px; background: rgba(255,255,255,.08); margin: 16px 0;
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <div class="hgroup">
+        <h1>{title}</h1>
+        <div class="sub">Run: {run_ts}</div>
+      </div>
+      <div class="chips">
+        <div class="chip ok">US Universe</div>
+        <div class="chip">Liquidity-ranked</div>
+        <div class="chip warn">Not financial advice</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Summary</div>
+      {meta}
+    </div>
+
+    {table_block}
+
+    <div class="hr"></div>
+    <div class="footer">{footer_note}</div>
+  </div>
+</body>
+</html>
+"""
+
+
+def df_to_table_html(df: pd.DataFrame) -> str:
     """
+    Render a table matching the dark theme (no inline colors).
+    """
+    show = df.copy()
 
-    fmt = df.copy()
-    for c in ["strike", "mid", "spread_pct", "score", "dvol_usd"]:
-        if c in fmt.columns:
-            fmt[c] = pd.to_numeric(fmt[c], errors="coerce")
+    # format
+    if "spread_pct" in show.columns:
+        show["spread_pct"] = (pd.to_numeric(show["spread_pct"], errors="coerce") * 100).round(2).astype(str) + "%"
 
-    if "spread_pct" in fmt.columns:
-        fmt["spread_pct"] = (fmt["spread_pct"] * 100).round(2).astype(str) + "%"
+    for c in ["mid", "strike", "score"]:
+        if c in show.columns:
+            show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
 
-    if "mid" in fmt.columns:
-        fmt["mid"] = fmt["mid"].round(2)
-
-    if "score" in fmt.columns:
-        fmt["score"] = fmt["score"].round(2)
-
-    if "dvol_usd" in fmt.columns:
-        fmt["dvol_usd"] = (fmt["dvol_usd"] / 1e6).round(1).astype(str) + "M"
+    if "dvol_usd" in show.columns:
+        show["dvol_usd"] = (pd.to_numeric(show["dvol_usd"], errors="coerce") / 1e6).round(1).astype(str) + "M"
 
     cols = ["ticker", "side", "exp", "dte", "strike", "mid", "spread_pct", "OI", "vol", "score", "dvol_usd"]
-    cols = [c for c in cols if c in fmt.columns]
+    cols = [c for c in cols if c in show.columns]
 
-    def td_class(col):
-        return "num" if col in {"dte", "strike", "mid", "OI", "vol", "score", "spread_pct", "dvol_usd"} else ""
+    def td_class(col: str) -> str:
+        return "num" if col in {"dte", "strike", "mid", "spread_pct", "OI", "vol", "score", "dvol_usd"} else ""
 
-    header = "<tr>" + "".join([f"<th>{c.upper()}</th>" for c in cols]) + "</tr>"
-    rows = []
-    for _, r in fmt[cols].iterrows():
-        rows.append("<tr>" + "".join([f"<td class='{td_class(c)}'>{r[c]}</td>" for c in cols]) + "</tr>")
+    thead = "<tr>" + "".join([f"<th>{c.upper()}</th>" for c in cols]) + "</tr>"
+    body_rows = []
+    for _, r in show[cols].iterrows():
+        tds = "".join([f"<td class='{td_class(c)}'>{r[c]}</td>" for c in cols])
+        body_rows.append(f"<tr>{tds}</tr>")
 
-    return styles + f"<table>{header}{''.join(rows)}</table>"
+    return f"<table>{thead}{''.join(body_rows)}</table>"
 
-# -----------------------------
-# Main
-# -----------------------------
-def main():
-    smtp_cfg = parse_smtp_env()
-    run_ts = datetime.now().strftime("%Y-%m-%d %H:%M %Z").strip()
 
-    # 1) Build US ticker universe
-    symbols = fetch_us_symbols()
-
-    # 2) Pick liquid subset (makes it feasible on Actions)
-    liquid = pick_liquid_tickers(symbols)
-    if liquid.empty:
-        html = f"""
-        <html><body>
-          <h2>Daily Options Shortlist (US Universe)</h2>
-          <p style="color:#444;font-size:13px;">Run: {run_ts}</p>
-          <p>Could not build a liquid ticker list today (data source issue).</p>
-        </body></html>
-        """
-        send_email_smtp(smtp_cfg, f"Options Shortlist (US) — {datetime.now().strftime('%Y-%m-%d')}", html)
-        print("Email sent (no liquid list).")
-        return
-
-    tickers = liquid["ticker"].tolist()
-    dvol_map = dict(zip(liquid["ticker"], liquid["dvol_usd"]))
-
+# =============================================================================
+# Scanning logic with auto-relax fallback
+# =============================================================================
+def scan_options_for_tickers(
+    tickers: list[str],
+    dvol_map: dict[str, float],
+    min_dte: int,
+    max_dte: int,
+    min_oi: int,
+    min_opt_vol: int,
+    max_spread_pct: float,
+) -> tuple[pd.DataFrame, int]:
     all_rows = []
     errors = 0
 
-    # 3) Scan options chains
     for t in tickers:
         if errors >= MAX_TICKER_ERRORS:
             break
@@ -382,13 +530,13 @@ def main():
             if not px:
                 continue
 
-            expirations = list(tk.options)  # empty if no options
+            expirations = list(tk.options)
             if not expirations:
                 continue
 
             for exp in expirations:
                 days = dte(exp)
-                if days < MIN_DTE or days > MAX_DTE:
+                if days < min_dte or days > max_dte:
                     continue
 
                 try:
@@ -414,12 +562,12 @@ def main():
                     df["side"] = side
                     df["exp"] = exp
 
-                    # Tradability filters
+                    # tradability filters
                     df = df[
-                        (df["openInterest"].fillna(0) >= MIN_OI) &
-                        (df["volume"].fillna(0) >= MIN_OPT_VOL) &
+                        (df["openInterest"].fillna(0) >= min_oi) &
+                        (df["volume"].fillna(0) >= min_opt_vol) &
                         (df["mid"] > 0) &
-                        (df["spread_pct"].fillna(999) <= MAX_SPREAD_PCT)
+                        (df["spread_pct"].fillna(999) <= max_spread_pct)
                     ].dropna(subset=["spread_pct"])
 
                     if df.empty:
@@ -450,46 +598,129 @@ def main():
             time.sleep(SLEEP_BETWEEN_TICKERS)
 
     out = pd.DataFrame(all_rows)
-    out = out.sort_values("score", ascending=False).head(MAX_TOTAL_ROWS) if not out.empty else out
+    if not out.empty:
+        out = out.sort_values("score", ascending=False).head(MAX_TOTAL_ROWS)
 
-    title = "Daily Options Shortlist (US Universe)"
-    subtitle = f"""
-      <p class='meta'>
-        <span class='badge ok'>US universe</span>
-        <span class='badge'>liquidity-ranked</span>
-        <span class='badge warn'>not financial advice</span><br/>
-        Run: {run_ts}<br/>
-        Universe: NASDAQ/NYSE/AMEX symbols → top {len(tickers)} by $ volume (≥ ${MIN_DVOL_USD:,.0f}/day)
-      </p>
-    """
+    return out, errors
+
+
+# =============================================================================
+# Main
+# =============================================================================
+def main():
+    smtp_cfg = parse_smtp_env()
+    run_ts = datetime.now().strftime("%Y-%m-%d %H:%M %Z").strip()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # 1) Universe + liquidity rank
+    symbols = fetch_us_symbols()
+    liquid = pick_liquid_tickers(symbols)
+
+    if liquid.empty:
+        html = build_email_html(
+            title="Daily Options Shortlist",
+            run_ts=run_ts,
+            meta_lines=[
+                "Universe build failed (no liquidity list). This is usually a data source hiccup.",
+                "Try rerunning later."
+            ],
+            table_html=None,
+            footer_note="Scanner uses free market data. Not financial advice."
+        )
+        send_email_smtp(smtp_cfg, f"Options Shortlist — {today}", html)
+        print("Email sent (no liquidity list).")
+        return
+
+    tickers = liquid["ticker"].tolist()
+    dvol_map = dict(zip(liquid["ticker"], liquid["dvol_usd"]))
+
+    # 2) Pass 1 (strict)
+    out1, errors1 = scan_options_for_tickers(
+        tickers=tickers,
+        dvol_map=dvol_map,
+        min_dte=MIN_DTE_1,
+        max_dte=MAX_DTE_1,
+        min_oi=MIN_OI_1,
+        min_opt_vol=MIN_OPT_VOL_1,
+        max_spread_pct=MAX_SPREAD_PCT_1
+    )
+
+    used_pass = 1
+    out = out1
+    errors = errors1
+
+    # 3) If no matches, auto-relax (Pass 2)
+    if out.empty:
+        # relaxed defaults (can still be overridden with env if you want, but these are safe fallbacks)
+        MIN_DTE_2        = int(os.getenv("MIN_DTE_RELAX", "7"))
+        MAX_DTE_2        = int(os.getenv("MAX_DTE_RELAX", "60"))
+        MIN_OI_2         = int(os.getenv("MIN_OI_RELAX", "100"))
+        MIN_OPT_VOL_2    = int(os.getenv("MIN_OPT_VOL_RELAX", "10"))
+        MAX_SPREAD_PCT_2 = float(os.getenv("MAX_SPREAD_PCT_RELAX", "0.10"))
+
+        out2, errors2 = scan_options_for_tickers(
+            tickers=tickers,
+            dvol_map=dvol_map,
+            min_dte=MIN_DTE_2,
+            max_dte=MAX_DTE_2,
+            min_oi=MIN_OI_2,
+            min_opt_vol=MIN_OPT_VOL_2,
+            max_spread_pct=MAX_SPREAD_PCT_2
+        )
+
+        used_pass = 2
+        out = out2
+        errors = max(errors1, errors2)
+
+        # Keep for meta display
+        relax_meta = (MIN_DTE_2, MAX_DTE_2, MIN_OI_2, MIN_OPT_VOL_2, MAX_SPREAD_PCT_2)
+    else:
+        relax_meta = None
+
+    # 4) Build email
+    base_meta = [
+        f"Tickers scanned: {len(tickers)} (top by $ volume ≥ ${MIN_DVOL_USD:,.0f}/day, cap {MAX_STOCKS})",
+        f"Side: {'CALLS only' if CALLS_ONLY else ('PUTS only' if PUTS_ONLY else 'CALLS + PUTS')}",
+        f"Errors (ticker-level): {errors} (stop cap {MAX_TICKER_ERRORS})",
+    ]
+
+    if used_pass == 1:
+        filt_line = f"Filters (Pass 1): DTE {MIN_DTE_1}-{MAX_DTE_1}, OI ≥ {MIN_OI_1}, Vol ≥ {MIN_OPT_VOL_1}, Spread ≤ {int(MAX_SPREAD_PCT_1*100)}%"
+        base_meta.append(filt_line)
+    else:
+        # show pass 1 + pass 2
+        base_meta.append(
+            f"Filters (Pass 1): DTE {MIN_DTE_1}-{MAX_DTE_1}, OI ≥ {MIN_OI_1}, Vol ≥ {MIN_OPT_VOL_1}, Spread ≤ {int(MAX_SPREAD_PCT_1*100)}%"
+        )
+        if relax_meta:
+            md2, xd2, oi2, v2, sp2 = relax_meta
+            base_meta.append(
+                f"Auto-relaxed → Pass 2: DTE {md2}-{xd2}, OI ≥ {oi2}, Vol ≥ {v2}, Spread ≤ {int(sp2*100)}%"
+            )
 
     if out.empty:
-        html = f"""
-        <html><body>
-          <h2>{title}</h2>
-          {subtitle}
-          <p>No contracts matched your filters today.</p>
-          <p class="meta small">
-            Filters: {MIN_DTE}-{MAX_DTE} DTE, OI≥{MIN_OI}, opt vol≥{MIN_OPT_VOL}, spread≤{int(MAX_SPREAD_PCT*100)}% of mid.
-          </p>
-        </body></html>
-        """
+        html = build_email_html(
+            title="Daily Options Shortlist",
+            run_ts=run_ts,
+            meta_lines=base_meta + ["Result: 0 matches."],
+            table_html=None,
+            footer_note="Ranks for tradability (liquidity + fill quality + near-ATM + DTE preference). Not financial advice."
+        )
     else:
-        html = f"""
-        <html><body>
-          <h2>{title}</h2>
-          {subtitle}
-          <p class='meta small'>
-            Filters: {MIN_DTE}-{MAX_DTE} DTE, OI≥{MIN_OI}, opt vol≥{MIN_OPT_VOL}, spread≤{int(MAX_SPREAD_PCT*100)}% of mid.
-            Score ranks tradability (liquidity + fill quality + near-ATM + DTE preference).
-          </p>
-          {to_html_table(out)}
-        </body></html>
-        """
+        table_html = df_to_table_html(out)
+        html = build_email_html(
+            title="Daily Options Shortlist",
+            run_ts=run_ts,
+            meta_lines=base_meta + [f"Result: {len(out)} contracts (top {MAX_TOTAL_ROWS})."],
+            table_html=table_html,
+            footer_note="Ranks for tradability (liquidity + fill quality + near-ATM + DTE preference). Not financial advice."
+        )
 
-    subject = f"Options Shortlist (US) — {datetime.now().strftime('%Y-%m-%d')}"
+    # 5) Send
+    subject = f"Options Shortlist — {today}"
     send_email_smtp(smtp_cfg, subject, html)
-    print(f"Email sent OK. Rows={len(out)}  Tickers_scanned={len(tickers)}  Errors={errors}")
+    print(f"Email sent OK. pass={used_pass} rows={len(out)} tickers_scanned={len(tickers)} errors={errors}")
+
 
 if __name__ == "__main__":
     main()
