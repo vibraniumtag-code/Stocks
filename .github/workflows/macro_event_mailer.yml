@@ -8,6 +8,7 @@ on:
 jobs:
   send:
     runs-on: ubuntu-latest
+    environment: GMAIL
     env:
       SMTP_HOST: smtp.gmail.com
       SMTP_PORT: 465
