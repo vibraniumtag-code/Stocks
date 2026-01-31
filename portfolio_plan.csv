@@ -1,8 +1,8 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
-SELL,CRM,CRM 2026-01-30 C 215,2.0,2.0,0.0,SELL_ALL,375.0,1.875,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,CRM,CRM 2026-01-30 C 215,2.0,0.0,0.0,HOLD,252.0,1.26,No action,Below pyramid thresholds,,,,,,
 SELL,XOM,XOM 2026-02-28 C 138,2.0,1.0,0.0,SELL_1,700.0,3.5,Structure/Trim,Selling/Trimming takes priority,,,,,,
-HOLD,JNJ,JNJ 2026-03-06 C 230,1.0,0.0,0.0,HOLD,427.5,4.275,No action,Below pyramid thresholds,,,,,,
-HOLD,UPS,UPS 2026-03-06 C 110,2.0,0.0,0.0,HOLD,275.0,1.375,No action,ATR not OK,,,,,,
+HOLD,JNJ,JNJ 2026-03-06 C 230,1.0,0.0,0.0,HOLD,382.5,3.825,No action,Below pyramid thresholds,,,,,,
+HOLD,UPS,UPS 2026-03-06 C 110,2.0,0.0,0.0,HOLD,272.0,1.36,No action,ATR not OK,,,,,,
 HOLD,UNH,UNH 2026-02-26 C 285,1.0,0.0,0.0,HOLD,1140.0,11.4,No action,Below pyramid thresholds,,,,,,
-HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,35.0,0.35000000000000003,No action,ATR not OK,,,,,,
-BUY,HON,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-20,HON260320C00230000,5.60,1.0,560.0
+HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,28.0,0.27999999999999997,No action,ATR not OK,,,,,,
+BUY,KO,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-20,KO260320C00075000,1.95,1.0,195.0
