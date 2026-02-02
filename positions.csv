@@ -1,4 +1,6 @@
 ticker,option_name,option_entry_price,entry_date,underlying_entry_price,contracts,
+CSCO,CSCO 2026-03-20 C 80,3.76,2026-02-02,79.8,,
+CRM,CRM 2026-01-30 C 215,1.26,2026-01-28,212,2,
 XOM,XOM 2026-02-28 C 138,3.5,2026-01-28,137.9,1,
 JNJ,JNJ 2026-03-06 C 230,3.4,2026-01-26,225.3,1,
 UPS,UPS 2026-03-06 C 110,3.3,2026-01-26,110,2,
