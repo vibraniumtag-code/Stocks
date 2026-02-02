@@ -1,8 +1,8 @@
-Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
-HOLD,CRM,CRM 2026-01-30 C 215,2.0,0.0,0.0,HOLD,252.0,1.26,No action,Below pyramid thresholds,,,,,,
-SELL,XOM,XOM 2026-02-28 C 138,2.0,1.0,0.0,SELL_1,700.0,3.5,Structure/Trim,Selling/Trimming takes priority,,,,,,
-HOLD,JNJ,JNJ 2026-03-06 C 230,1.0,0.0,0.0,HOLD,530.0,5.300000000000001,No action,Below pyramid thresholds,,,,,,
-HOLD,UPS,UPS 2026-03-06 C 110,2.0,0.0,0.0,HOLD,306.0,1.53,No action,Below pyramid thresholds,,,,,,
-HOLD,UNH,UNH 2026-02-26 C 285,1.0,0.0,0.0,HOLD,1140.0,11.4,No action,Below pyramid thresholds,,,,,,
-HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,228.0,2.28,No action,ATR not OK,,,,,,
-BUY,CSCO,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-20,CSCO260320C00080000,2.74,1.0,274.0
+Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
+HOLD,CSCO,CSCO 2026-03-20 C 80,1,0,0,HOLD,405.0,4.050000000000001,No action,Below pyramid thresholds
+HOLD,CRM,CRM 2026-01-30 C 215,2,0,0,HOLD,252.0,1.26,No action,Below pyramid thresholds
+HOLD,XOM,XOM 2026-02-28 C 138,1,0,0,HOLD,350.0,3.5,No action,Below pyramid thresholds
+HOLD,JNJ,JNJ 2026-03-06 C 230,1,0,0,HOLD,497.5,4.975,No action,Below pyramid thresholds
+HOLD,UPS,UPS 2026-03-06 C 110,2,0,0,HOLD,534.0,2.67,No action,Below pyramid thresholds
+HOLD,UNH,UNH 2026-02-26 C 285,1,0,0,HOLD,1140.0,11.4,No action,Below pyramid thresholds
+HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,50.5,0.505,No action,ATR not OK
