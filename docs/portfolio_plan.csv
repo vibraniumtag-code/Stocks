@@ -1,5 +1,5 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
-HOLD,CRM,CRM 2026-12-18 C 210,1,0,0,HOLD,2597.5,25.975,No action,Below pyramid thresholds
-HOLD,NOW,NOW 2026-08-21 C 125,1,0,0,HOLD,805.0,8.05,No action,ATR not OK
+HOLD,CRM,CRM 2026-12-18 C 210,1,0,0,HOLD,2625.0,26.25,No action,Below pyramid thresholds
+HOLD,NOW,NOW 2026-08-21 C 125,1,0,0,HOLD,945.0,9.45,No action,Below pyramid thresholds
 HOLD,UNH,UNH 2026-02-26 C 285,1,0,0,HOLD,1140.0,11.4,No action,Below pyramid thresholds
-HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,11.5,0.11499999999999999,No action,ATR not OK
+HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,8.0,0.08,No action,ATR not OK
