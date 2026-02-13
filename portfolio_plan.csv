@@ -1,10 +1,9 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
-SELL,CRM,CRM 2026-12-18 C 210,1.0,1.0,0.0,SELL_ALL,2195.0,21.950000000000003,Structure/Trim,Selling/Trimming takes priority,,,,,,
-HOLD,NOW,NOW 2026-08-21 C 125,1.0,0.0,0.0,HOLD,755.0,7.55,No action,ATR not OK,,,,,,
+HOLD,CRM,CRM 2026-12-18 C 210,1.0,0.0,0.0,HOLD,2235.0,22.35,No action,ATR not OK,,,,,,
+HOLD,NOW,NOW 2026-08-21 C 125,1.0,0.0,0.0,HOLD,840.0,8.4,No action,ATR not OK,,,,,,
 HOLD,UNH,UNH 2026-02-26 C 285,1.0,0.0,0.0,HOLD,1140.0,11.4,No action,Below pyramid thresholds,,,,,,
-HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,17.5,0.17500000000000002,No action,ATR not OK,,,,,,
-SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,2440.0,12.2,Structure/Trim,Selling/Trimming takes priority,,,,,,
-HOLD,NOW,NOW 2026-08-21 C 140,4.0,0.0,0.0,HOLD,1900.0,4.75,No action,Below pyramid thresholds,,,,,,
-HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,2325.0,23.25,No action,"No pyramid budget (need $2,325.00, left $511.69)",,,,,,
-BUY,UPS,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-27,UPS260327C00120000,3.90,6.0,2340.0
-BUY,XOM,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-03-27,XOM260327C00155000,5.68,1.0,568.0
+HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,8.0,0.08,No action,ATR not OK,,,,,,
+SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,2710.0,13.55,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,NOW,NOW 2026-08-21 C 140,4.0,0.0,0.0,HOLD,2120.0,5.300000000000001,No action,Below pyramid thresholds,,,,,,
+HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,2312.5,23.125,No action,Below pyramid thresholds,,,,,,
+BUY,NFLX,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-03-27,NFLX260327P00076000,3.70,3.0,1110.0
