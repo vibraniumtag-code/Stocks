@@ -1,9 +1,8 @@
-Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
-HOLD,CRM,CRM 2026-12-18 C 210,1.0,0.0,0.0,HOLD,2205.0,22.05,No action,ATR not OK,,,,,,
-HOLD,NOW,NOW 2026-08-21 C 125,1.0,0.0,0.0,HOLD,910.0,9.1,No action,Below pyramid thresholds,,,,,,
-HOLD,UNH,UNH 2026-02-26 C 285,1.0,0.0,0.0,HOLD,1140.0,11.4,No action,Below pyramid thresholds,,,,,,
-HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,13.5,0.135,No action,ATR not OK,,,,,,
-SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,2910.0,14.55,Structure/Trim,Selling/Trimming takes priority,,,,,,
-SELL,NOW,NOW 2026-08-21 C 140,4.0,2.0,0.0,SELL_2,2320.0,5.8,Structure/Trim,Selling/Trimming takes priority,,,,,,
-HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,2035.0,20.35,No action,Below pyramid thresholds,,,,,,
-BUY,V,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-04-02,V260402P00290000,3.40,6.0,2040.0
+Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
+HOLD,CRM,CRM 2026-12-18 C 210,1,0,0,HOLD,2207.5,22.075,No action,ATR not OK
+HOLD,NOW,NOW 2026-08-21 C 125,1,0,0,HOLD,930.0,9.3,No action,Below pyramid thresholds
+HOLD,UNH,UNH 2026-02-26 C 285,1,0,0,HOLD,1140.0,11.4,No action,Below pyramid thresholds
+HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,15.5,0.155,No action,ATR not OK
+SELL,NOW,NOW 2026-08-21 C 110,2,1,0,SELL_1,2940.0,14.7,Structure/Trim,Selling/Trimming takes priority
+SELL,NOW,NOW 2026-08-21 C 140,4,2,0,SELL_2,2340.0,5.85,Structure/Trim,Selling/Trimming takes priority
+HOLD,ORCL,ORCL 2026-05-15 C 150,1,0,0,HOLD,2067.5,20.674999999999997,No action,Below pyramid thresholds
