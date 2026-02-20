@@ -1,8 +1,10 @@
-Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
-HOLD,CRM,CRM 2026-12-18 C 210,1,0,0,HOLD,2430.0,24.299999999999997,No action,ATR not OK
-HOLD,NOW,NOW 2026-08-21 C 125,1,0,0,HOLD,995.0,9.95,No action,Below pyramid thresholds
-HOLD,UNH,UNH 2026-02-26 C 285,1,0,0,HOLD,1140.0,11.4,No action,Below pyramid thresholds
-HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,13.0,0.13,No action,ATR not OK
-SELL,NOW,NOW 2026-08-21 C 110,2,1,0,SELL_1,3100.0,15.5,Structure/Trim,Selling/Trimming takes priority
-SELL,NOW,NOW 2026-08-21 C 140,4,2,0,SELL_2,2520.0,6.300000000000001,Structure/Trim,Selling/Trimming takes priority
-HOLD,ORCL,ORCL 2026-05-15 C 150,1,0,0,HOLD,2235.0,22.35,No action,Below pyramid thresholds
+Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
+HOLD,CRM,CRM 2026-12-18 C 210,1.0,0.0,0.0,HOLD,2257.5,22.575,No action,ATR not OK,,,,,,
+HOLD,NOW,NOW 2026-08-21 C 125,1.0,0.0,0.0,HOLD,990.0,9.899999999999999,No action,Below pyramid thresholds,,,,,,
+HOLD,UNH,UNH 2026-02-26 C 285,1.0,0.0,0.0,HOLD,1140.0,11.4,No action,Below pyramid thresholds,,,,,,
+HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,4.5,0.045,No action,ATR not OK,,,,,,
+SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,3120.0,15.600000000000001,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 140,4.0,2.0,0.0,SELL_2,2520.0,6.3,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,2185.0,21.85,No action,Below pyramid thresholds,,,,,,
+HOLD,CRM,CRM 2026-03-20 C 200,1.0,0.0,0.0,HOLD,615.0,6.15,No action,ATR not OK,,,,,,
+BUY,JNJ,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-04-02,JNJ260402C00245000,7.10,3.0,2130.0
