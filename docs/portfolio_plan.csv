@@ -1,9 +1,11 @@
-Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
-HOLD,CRM,CRM 2026-12-18 C 210,1,0,0,HOLD,2922.5,29.225,No action,Below pyramid thresholds
-HOLD,NOW,NOW 2026-08-21 C 125,1,0,0,HOLD,1040.0,10.4,No action,Below pyramid thresholds
-HOLD,UNH,UNH 2026-02-26 C 285,1,0,0,HOLD,1140.0,11.4,No action,Below pyramid thresholds
-HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,3.0,0.03,No action,ATR not OK
-SELL,NOW,NOW 2026-08-21 C 110,2,1,0,SELL_1,3160.0,15.8,Structure/Trim,Selling/Trimming takes priority
-SELL,NOW,NOW 2026-08-21 C 140,4,2,0,SELL_2,2620.0,6.55,Structure/Trim,Selling/Trimming takes priority
-HOLD,ORCL,ORCL 2026-05-15 C 150,1,0,0,HOLD,1787.5,17.875,No action,Below pyramid thresholds
-HOLD,CRM,CRM 2026-03-20 C 200,1,0,0,HOLD,840.0,8.399999999999999,No action,Below pyramid thresholds
+Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
+HOLD,CRM,CRM 2026-12-18 C 210,1.0,0.0,0.0,HOLD,2592.5,25.925,No action,Below pyramid thresholds,,,,,,
+HOLD,NOW,NOW 2026-08-21 C 125,1.0,0.0,0.0,HOLD,970.0,9.7,No action,Below pyramid thresholds,,,,,,
+HOLD,UNH,UNH 2026-02-26 C 285,1.0,0.0,0.0,HOLD,1140.0,11.4,No action,Below pyramid thresholds,,,,,,
+HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,3.0,0.03,No action,ATR not OK,,,,,,
+SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,3070.0,15.350000000000001,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 140,4.0,2.0,0.0,SELL_2,2220.0,5.550000000000001,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,1505.0,15.05,No action,Below pyramid thresholds,,,,,,
+HOLD,CRM,CRM 2026-03-20 C 200,1.0,0.0,0.0,HOLD,607.5,6.075,No action,Below pyramid thresholds,,,,,,
+BUY,KO,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-04-17,KO260417C00082500,1.49,6.0,894.0
+BUY,PG,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-04-17,PG260417C00165000,6.10,2.0,1220.0
