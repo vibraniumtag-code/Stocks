@@ -7,5 +7,5 @@ SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,5260.0,26.3,Structure/Trim,Sell
 SELL,NOW,NOW 2026-08-21 C 140,4.0,3.0,0.0,SELL_3,4720.0,11.8,Structure/Trim,Selling/Trimming takes priority,,,,,,
 HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,1915.0,19.15,No action,Below pyramid thresholds,,,,,,
 HOLD,CRM,CRM 2026-03-20 C 200,1.0,0.0,0.0,HOLD,842.5,8.425,No action,Below pyramid thresholds,,,,,,
-BUY,NKE,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-04-17,NKE260417P00057500,3.72,6.0,2232.0
-BUY,HD,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-04-17,HD260417P00360000,14.45,2.0,2890.0
+BUY,NKE,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-04-24,NKE260424P00050000,1.10,6.0,660.0
+BUY,HD,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-04-24,HD260424P00360000,15.45,3.0,4635.0
