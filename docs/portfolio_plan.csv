@@ -7,4 +7,4 @@ SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,3630.0,18.15,Structure/Trim,Sel
 SELL,NOW,NOW 2026-08-21 C 140,4.0,2.0,0.0,SELL_2,2800.0,7.0,Structure/Trim,Selling/Trimming takes priority,,,,,,
 HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,1687.5,16.875,No action,Below pyramid thresholds,,,,,,
 HOLD,CRM,CRM 2026-03-20 C 200,1.0,0.0,0.0,HOLD,201.5,2.015,No action,ATR not OK,,,,,,
-BUY,QCOM,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-04-24,QCOM260424P00130000,6.45,4.0,2580.0
+BUY,QCOM,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-05-01,QCOM260501P00130000,6.32,5.0,3160.0
