@@ -1,11 +1,11 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
-HOLD,CRM,CRM 2026-12-18 C 210,1.0,0.0,0.0,HOLD,2280.0,22.8,No action,Below pyramid thresholds,,,,,,
-HOLD,NOW,NOW 2026-08-21 C 125,1.0,0.0,0.0,HOLD,1180.0,11.8,No action,Below pyramid thresholds,,,,,,
+HOLD,CRM,CRM 2026-12-18 C 210,1.0,0.0,0.0,HOLD,2320.0,23.2,No action,Below pyramid thresholds,,,,,,
+HOLD,NOW,NOW 2026-08-21 C 125,1.0,0.0,0.0,HOLD,1120.0,11.2,No action,Below pyramid thresholds,,,,,,
 HOLD,UNH,UNH 2026-02-26 C 285,1.0,0.0,0.0,HOLD,1140.0,11.4,No action,Below pyramid thresholds,,,,,,
 HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,750.0,7.5,No action,ATR not OK,,,,,,
-SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,3730.0,18.65,Structure/Trim,Selling/Trimming takes priority,,,,,,
-SELL,NOW,NOW 2026-08-21 C 140,4.0,2.0,0.0,SELL_2,2880.0,7.199999999999999,Structure/Trim,Selling/Trimming takes priority,,,,,,
-SELL,ORCL,ORCL 2026-05-15 C 150,1.0,1.0,0.0,SELL_ALL,1422.5,14.225000000000001,Structure/Trim,Selling/Trimming takes priority,,,,,,
-HOLD,CRM,CRM 2026-03-20 C 200,1.0,0.0,0.0,HOLD,83.5,0.835,No action,Below pyramid thresholds,,,,,,
-BUY,PG,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-05-01,PG260501P00135000,1.65,6.0,990.0
-BUY,NKE,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-05-01,NKE260501P00057000,4.23,6.0,2538.0
+SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,3570.0,17.85,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 140,4.0,2.0,0.0,SELL_2,2620.0,6.55,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,1577.5,15.775,No action,Below pyramid thresholds,,,,,,
+HOLD,CRM,CRM 2026-03-20 C 200,1.0,0.0,0.0,HOLD,43.0,0.43,No action,Below pyramid thresholds,,,,,,
+BUY,PG,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-05-01,PG260501P00135000,2.00,6.0,1200.0
+BUY,CVX,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-05-01,CVX260501C00200000,9.45,2.0,1890.0
