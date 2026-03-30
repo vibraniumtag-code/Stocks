@@ -1,11 +1,11 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
-SELL,CRM,CRM 2026-12-18 C 210,1.0,1.0,0.0,SELL_ALL,1615.0,16.15,Structure/Trim,Selling/Trimming takes priority,,,,,,
-SELL,NOW,NOW 2026-08-21 C 125,1.0,1.0,0.0,SELL_ALL,610.0,6.1,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,CRM,CRM 2026-12-18 C 210,1.0,1.0,0.0,SELL_ALL,1570.0,15.7,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 125,1.0,1.0,0.0,SELL_ALL,620.0,6.2,Structure/Trim,Selling/Trimming takes priority,,,,,,
 SELL,UNH,UNH 2026-02-26 C 285,1.0,1.0,0.0,SELL_ALL,1140.0,11.4,Structure/Trim,Selling/Trimming takes priority,,,,,,
 SELL,UNH,UNH 2026-03-06 C 375,1.0,1.0,0.0,SELL_ALL,750.0,7.5,Structure/Trim,Selling/Trimming takes priority,,,,,,
-SELL,NOW,NOW 2026-08-21 C 110,2.0,2.0,0.0,SELL_ALL,2100.0,10.5,Structure/Trim,Selling/Trimming takes priority,,,,,,
-SELL,NOW,NOW 2026-08-21 C 140,4.0,4.0,0.0,SELL_ALL,1340.0,3.35,Structure/Trim,Selling/Trimming takes priority,,,,,,
-SELL,ORCL,ORCL 2026-05-15 C 150,1.0,1.0,0.0,SELL_ALL,702.5,7.025,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 110,2.0,2.0,0.0,SELL_ALL,2130.0,10.65,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 140,4.0,4.0,0.0,SELL_ALL,1360.0,3.4,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,ORCL,ORCL 2026-05-15 C 150,1.0,1.0,0.0,SELL_ALL,700.0,7.0,Structure/Trim,Selling/Trimming takes priority,,,,,,
 SELL,CRM,CRM 2026-03-20 C 200,1.0,1.0,0.0,SELL_ALL,1030.0,10.3,Structure/Trim,Selling/Trimming takes priority,,,,,,
-BUY,NKE,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-05-15,NKE260515P00052500,3.95,6.0,2370.0
-BUY,XOM,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-05-15,XOM260515C00170000,9.19,6.0,5514.0
+BUY,NVDA,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-05-15,NVDA260515P00015000,0.01,6.0,6.0
+BUY,META,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-05-15,META260515P00190000,0.07,6.0,42.0
