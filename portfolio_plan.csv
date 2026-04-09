@@ -1,10 +1,11 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
-HOLD,CRM,CRM 2026-12-18 C 210,1.0,0.0,0.0,HOLD,1682.5,16.825000000000003,No action,ATR not OK,,,,,,
-HOLD,NOW,NOW 2026-08-21 C 125,1.0,0.0,0.0,HOLD,550.0,5.5,No action,ATR not OK,,,,,,
+SELL,CRM,CRM 2026-12-18 C 210,1.0,1.0,0.0,SELL_ALL,1327.5,13.274999999999999,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 125,1.0,1.0,0.0,SELL_ALL,475.0,4.75,Structure/Trim,Selling/Trimming takes priority,,,,,,
 HOLD,UNH,UNH 2026-02-26 C 285,1.0,0.0,0.0,HOLD,1140.0,11.4,No action,Below pyramid thresholds,,,,,,
 HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,750.0,7.5,No action,ATR not OK,,,,,,
-SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,2030.0,10.15,Structure/Trim,Selling/Trimming takes priority,,,,,,
-HOLD,NOW,NOW 2026-08-21 C 140,4.0,0.0,0.0,HOLD,1160.0,2.9000000000000004,No action,Below pyramid thresholds,,,,,,
-HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,657.5,6.574999999999999,No action,Below pyramid thresholds,,,,,,
-HOLD,CRM,CRM 2026-03-20 C 200,1.0,0.0,0.0,HOLD,1030.0,10.3,No action,ATR not OK,,,,,,
-BUY,INTC,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-05-22,INTC260522C00051000,5.99,1.0,599.0
+SELL,NOW,NOW 2026-08-21 C 110,2.0,2.0,0.0,SELL_ALL,1760.0,8.8,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 140,4.0,4.0,0.0,SELL_ALL,960.0,2.4,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,632.5,6.325,No action,Below pyramid thresholds,,,,,,
+SELL,CRM,CRM 2026-03-20 C 200,1.0,1.0,0.0,SELL_ALL,1030.0,10.3,Structure/Trim,Selling/Trimming takes priority,,,,,,
+BUY,NKE,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-05-22,NKE260522P00043000,1.95,6.0,1170.0
+BUY,PG,,,,,,,,New entry funded by freed cash (from sells),,BUY_PUT,2026-05-22,PG260522P00140000,3.21,6.0,1926.0
