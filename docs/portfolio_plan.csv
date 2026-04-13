@@ -1,10 +1,10 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
-SELL,CRM,CRM 2026-12-18 C 210,1.0,1.0,0.0,SELL_ALL,1037.5,10.375,Structure/Trim,Selling/Trimming takes priority,,,,,,
-SELL,NOW,NOW 2026-08-21 C 125,1.0,1.0,0.0,SELL_ALL,217.5,2.175,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,CRM,CRM 2026-12-18 C 210,1.0,1.0,0.0,SELL_ALL,1039.0,10.39,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 125,1.0,1.0,0.0,SELL_ALL,225.0,2.25,Structure/Trim,Selling/Trimming takes priority,,,,,,
 HOLD,UNH,UNH 2026-02-26 C 285,1.0,0.0,0.0,HOLD,1140.0,11.4,No action,Below pyramid thresholds,,,,,,
 HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,750.0,7.5,No action,ATR not OK,,,,,,
-SELL,NOW,NOW 2026-08-21 C 110,2.0,2.0,0.0,SELL_ALL,840.0,4.2,Structure/Trim,Selling/Trimming takes priority,,,,,,
-SELL,NOW,NOW 2026-08-21 C 140,4.0,4.0,0.0,SELL_ALL,480.0,1.2000000000000002,Structure/Trim,Selling/Trimming takes priority,,,,,,
-HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,435.0,4.35,No action,Below pyramid thresholds,,,,,,
+SELL,NOW,NOW 2026-08-21 C 110,2.0,2.0,0.0,SELL_ALL,860.0,4.3,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 140,4.0,4.0,0.0,SELL_ALL,480.0,1.2,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,430.0,4.3,No action,Below pyramid thresholds,,,,,,
 SELL,CRM,CRM 2026-03-20 C 200,1.0,1.0,0.0,SELL_ALL,1030.0,10.3,Structure/Trim,Selling/Trimming takes priority,,,,,,
-BUY,INTC,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-05-22,INTC260522C00060000,7.50,4.0,3000.0
+BUY,INTC,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-05-29,INTC260529C00062000,6.66,5.0,3330.0
