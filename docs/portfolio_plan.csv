@@ -1,9 +1,9 @@
 Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
-HOLD,CRM,CRM 2026-12-18 C 210,1,0,0,HOLD,1445.0,14.45,No action,ATR not OK
-HOLD,NOW,NOW 2026-08-21 C 125,1,0,0,HOLD,430.0,4.3,No action,ATR not OK
+HOLD,CRM,CRM 2026-12-18 C 210,1,0,0,HOLD,1565.0,15.65,No action,ATR not OK
+HOLD,NOW,NOW 2026-08-21 C 125,1,0,0,HOLD,465.0,4.65,No action,ATR not OK
 HOLD,UNH,UNH 2026-02-26 C 285,1,0,0,HOLD,1140.0,11.4,No action,Below pyramid thresholds
 HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,750.0,7.5,No action,ATR not OK
-HOLD,NOW,NOW 2026-08-21 C 110,2,0,0,HOLD,1600.0,8.0,No action,Below pyramid thresholds
-HOLD,NOW,NOW 2026-08-21 C 140,4,0,0,HOLD,960.0,2.4,No action,Below pyramid thresholds
-HOLD,ORCL,ORCL 2026-05-15 C 150,1,0,0,HOLD,2335.0,23.35,No action,"No pyramid budget (need $2,335.00, left $460.28)"
+HOLD,NOW,NOW 2026-08-21 C 110,2,0,0,HOLD,1660.0,8.3,No action,Below pyramid thresholds
+HOLD,NOW,NOW 2026-08-21 C 140,4,0,0,HOLD,1020.0,2.55,No action,Below pyramid thresholds
+HOLD,ORCL,ORCL 2026-05-15 C 150,1,0,0,HOLD,3086.0,30.86,No action,"No pyramid budget (need $3,086.00, left $509.01)"
 HOLD,CRM,CRM 2026-03-20 C 200,1,0,0,HOLD,1030.0,10.3,No action,ATR not OK
