@@ -1,9 +1,10 @@
-Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason
-HOLD,CRM,CRM 2026-12-18 C 210,1,0,0,HOLD,2040.0,20.4,No action,ATR not OK
-HOLD,NOW,NOW 2026-08-21 C 125,1,0,0,HOLD,680.0,6.8,No action,ATR not OK
-HOLD,UNH,UNH 2026-02-26 C 285,1,0,0,HOLD,1140.0,11.4,No action,Below pyramid thresholds
-HOLD,UNH,UNH 2026-03-06 C 375,1,0,0,HOLD,750.0,7.5,No action,Below pyramid thresholds
-SELL,NOW,NOW 2026-08-21 C 110,2,1,0,SELL_1,2380.0,11.9,Structure/Trim,Selling/Trimming takes priority
-HOLD,NOW,NOW 2026-08-21 C 140,4,0,0,HOLD,1620.0,4.05,No action,Below pyramid thresholds
-HOLD,ORCL,ORCL 2026-05-15 C 150,1,0,0,HOLD,3890.0,38.9,No action,"No pyramid budget (need $3,890.00, left $642.68)"
-HOLD,CRM,CRM 2026-03-20 C 200,1,0,0,HOLD,1030.0,10.3,No action,ATR not OK
+Type,Ticker,Option,ContractsHeld,SellContracts,AddContracts,Recommendation,PositionValue,OptionMark,Reason,PyramidReason,Strategy,Expiry,OptionSymbol,OptionLast,BuyContracts,EstCostTotal
+SELL,CRM,CRM 2026-12-18 C 210,1.0,1.0,0.0,SELL_ALL,1408.0,14.08,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 125,1.0,1.0,0.0,SELL_ALL,212.0,2.12,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,UNH,UNH 2026-02-26 C 285,1.0,0.0,0.0,HOLD,1140.0,11.4,No action,Below pyramid thresholds,,,,,,
+HOLD,UNH,UNH 2026-03-06 C 375,1.0,0.0,0.0,HOLD,750.0,7.5,No action,Below pyramid thresholds,,,,,,
+SELL,NOW,NOW 2026-08-21 C 110,2.0,1.0,0.0,SELL_1,820.0,4.1,Structure/Trim,Selling/Trimming takes priority,,,,,,
+SELL,NOW,NOW 2026-08-21 C 140,4.0,2.0,0.0,SELL_2,460.0,1.15,Structure/Trim,Selling/Trimming takes priority,,,,,,
+HOLD,ORCL,ORCL 2026-05-15 C 150,1.0,0.0,0.0,HOLD,2715.0,27.15,No action,"No pyramid budget (need $2,715.00, left $405.41)",,,,,,
+SELL,CRM,CRM 2026-03-20 C 200,1.0,1.0,0.0,SELL_ALL,1030.0,10.3,Structure/Trim,Selling/Trimming takes priority,,,,,,
+BUY,WMT,,,,,,,,New entry funded by freed cash (from sells),,BUY_CALL,2026-05-29,WMT260529C00132000,5.15,6.0,3090.0
